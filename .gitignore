@@ -14,7 +14,9 @@ sysagent-analysis/tests/output/
 sysagent-ide-extension/dist/
 sysagent-ide-extension/.vscode-test/
 
-release/
+/release/
+/sysagent-idc/release/
+/sysagent-ide-extension/release/
 .gitmodules
 .npmrc
 .yarnrc*
