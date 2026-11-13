@@ -1,0 +1,54 @@
+{
+  "version": "0.2.18",
+  "gxVersion": "0.6.5-2",
+  "agentsightVersion": "0.16.0",
+  "date": "2026-11-13",
+  "build": {
+    "desktopDeb": "passed",
+    "ideVsix": "passed",
+    "typecheck": "passed",
+    "finalRebuildWithGxLibraryDependencies": "passed"
+  },
+  "tests": {
+    "buildAndGxInputIntegrity": { "passed": 116, "failed": 0 },
+    "queryApiGpuUiAndGxRuntime": { "passed": 106, "failed": 0 },
+    "gxRuntimeSafetyIncludedAbove": { "passed": 18, "failed": 0 },
+    "fullInertInstallerSerialRun": { "passed": 473, "failedByFixtureTimeout": 3, "total": 476 },
+    "targetedRerunIncludingAllEarlierTimeoutCases": { "passed": 18, "failed": 0 },
+    "finalDependencyAndResourceAssertions": { "passed": 3, "failed": 0 }
+  },
+  "artifactChecks": {
+    "exactGxAndAgentSightDependencies": "passed",
+    "glibcZlibZstdDependencies": "passed",
+    "rootOwnedHelperAndResourceModes": "passed",
+    "packagedPostinstCallsIsolatedGxHelper": "passed",
+    "appAsarVersionAndNotices": "passed",
+    "vsixArchiveVersionAndNotices": "passed",
+    "sha256sums": "passed"
+  },
+  "gxIsolation": {
+    "network": "disabled",
+    "rootFilesystem": "read-only",
+    "capabilities": "all dropped",
+    "gpuDevices": "not passed through",
+    "modernRuntimeFixture": "glibc, zlib and zstd libraries copied read-only into the isolated test; not redistributed",
+    "versionCommandOutput": "0.6.5-2 a4846e6e",
+    "executableDependencies": "all resolved",
+    "libgxSoDependencies": "all resolved",
+    "libgxClientSoDependencies": "all resolved"
+  },
+  "browser": {
+    "homepageVersion": "0.2.18",
+    "gpuOverviewUnavailableEvidence": "passed",
+    "gpuDiagnosticsNotCheckedState": "passed",
+    "closeToFloatingManager": "passed",
+    "consoleWarningsAndErrors": 0
+  },
+  "limitations": [
+    "Full Ubuntu package installation was not tested: Ubuntu image retrieval failed.",
+    "The existing legacy builder image lacks the GX-required glibc and zstd; a modern read-only library fixture was used for runtime resolution and version checks.",
+    "GPU hardware/driver diagnostics and real host capture were not run.",
+    "The complete inert installer suite did not pass in one run because of fixture timeouts; every timed-out case passed when rerun separately.",
+    "No host package installation, user data changes, service activation or publication was performed."
+  ]
+}
