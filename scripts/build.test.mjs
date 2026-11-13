@@ -15,6 +15,9 @@ const scripts = dirname(fileURLToPath(import.meta.url));
 const project = resolve(scripts, '..');
 const VERSION = '0.2.17';
 const RUNTIME_VERSION = '0.16.0';
+const GX_VERSION = '0.6.5-2';
+const GX_FILENAME = `gx_${GX_VERSION}_amd64.deb`;
+const GX_DEB = Buffer.from('!<arch>\ninert bundled GX fixture; never install or execute\n');
 const LEGAL = ['LICENSE', 'THIRD_PARTY_NOTICES', 'FONT_LICENSE'];
 const CI = ['ci', '--include=dev', '--no-audit', '--no-fund'];
 const SUCCESS = /构建完成|构建成功|\b(?:success(?:ful(?:ly)?)?|succeeded)\b|\b(?:build|built)[^\n]*complet/i;
@@ -133,6 +136,24 @@ module.exports = {
 };
 `;
 
+const gxStub = String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const log = event => fs.appendFileSync(process.env.SYSAGENT_BUILD_TEST_LOG, JSON.stringify(event) + '\n');
+module.exports = {
+  verifyGxPackage(vendor) {
+    log({ kind: 'verify-gx', vendor });
+    if (vendor !== path.join(process.env.SYSAGENT_BUILD_TEST_ROOT, 'vendor/gx/linux-x64')) throw new Error('Wrong bundled GX path');
+    const manifest = JSON.parse(fs.readFileSync(path.join(vendor, 'manifest.json'), 'utf8'));
+    const binary = path.join(vendor, 'gx_0.6.5-2_amd64.deb');
+    if (crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex') !== manifest.sha256) throw new Error('GX checksum mismatch');
+    log({ kind: 'verified-gx', version: manifest.version });
+    return { binary, manifest };
+  }
+};
+`;
+
 const packageStub = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
@@ -212,7 +233,7 @@ function fixture(t) {
   for (const folder of ['sysagent-idc', 'sysagent-ide-extension']) {
     write(root, `${folder}/package.json`, JSON.stringify({
       name: folder, version: VERSION,
-      ...(folder === 'sysagent-idc' ? { build: { deb: { depends: [`sysom-agentsight-runtime (= ${RUNTIME_VERSION})`, 'python3'] } } } : {}),
+      ...(folder === 'sysagent-idc' ? { build: { deb: { depends: [`sysom-agentsight-runtime (= ${RUNTIME_VERSION})`, `gx (= ${GX_VERSION})`, 'python3'] } } } : {}),
     }));
     write(root, `${folder}/package-lock.json`, JSON.stringify({ version: VERSION, packages: { '': { version: VERSION } } }));
   }
@@ -222,6 +243,12 @@ function fixture(t) {
   write(root, 'sysagent-idc/scripts/prepare-sysak.cjs', sysakStub);
   write(root, 'sysagent-idc/electron/agentsight-deployment.cjs', agentSightStub);
   write(root, 'sysagent-idc/scripts/package-agentsight.cjs', packageStub);
+  write(root, 'scripts/gx-package.cjs', gxStub);
+  write(root, `vendor/gx/linux-x64/${GX_FILENAME}`, GX_DEB);
+  write(root, 'vendor/gx/linux-x64/manifest.json', JSON.stringify({
+    schema_version: '1.0', platform: 'linux', arch: 'x64', package: 'gx',
+    version: GX_VERSION, filename: GX_FILENAME, sha256: sha256(GX_DEB),
+  }));
   const sysak = Buffer.from('inert bundled SysAK fixture\n');
   write(root, 'vendor/sysak/linux-x64/sysak', sysak);
   write(root, 'vendor/sysak/linux-x64/manifest.json', JSON.stringify({ version: 'fixture', sha256: sha256(sysak) }));
@@ -290,20 +317,25 @@ function failed(result) {
   assert.doesNotMatch(result.stdout, SUCCESS);
 }
 
-function assertPreflight(f, { native = false, runtime = false } = {}) {
+function assertPreflight(f, { native = false, runtime = false, gx = false } = {}) {
   const events = f.events();
   const versions = events.findIndex(event => event.kind === 'versions');
   const firstNpm = events.findIndex(event => event.kind === 'npm');
   assert.notEqual(versions, -1, 'sync-versions --check must run');
   assert.deepEqual(events[versions].args, ['--check']);
   if (firstNpm !== -1) assert.ok(versions < firstNpm, 'Version preflight must precede npm');
-  for (const [required, kind] of [[native, 'verified-sysak'], [runtime, 'verified-agentsight']]) {
+  for (const [required, kind, start] of [
+    [native, 'verified-sysak', 'verify-sysak'],
+    [runtime, 'verified-agentsight', 'verify-agentsight'],
+    [gx, 'verified-gx', 'verify-gx'],
+  ]) {
     const index = events.findIndex(event => event.kind === kind);
     if (required) {
       assert.notEqual(index, -1, `${kind} must finish`);
       if (firstNpm !== -1) assert.ok(index < firstNpm, `${kind} must finish before npm`);
     } else {
       assert.equal(index, -1, `${kind} is not needed for this target`);
+      assert.equal(events.some(event => event.kind === start), false, `${start} must not run for this target`);
     }
   }
   assert.equal(events.some(event => /^forbidden-/.test(event.kind)), false);
@@ -341,13 +373,22 @@ function assertNativeArtifacts(f, { desktop, ide }) {
   if (desktop) {
     const desktopName = `sysagent-idc_${VERSION}_amd64.deb`;
     const runtimeName = `sysom-agentsight-runtime_${RUNTIME_VERSION}_amd64.deb`;
-    artifacts.push(desktopName, runtimeName);
+    artifacts.push(desktopName, runtimeName, GX_FILENAME, 'install-debs.sh');
     assert.equal(readFileSync(resolve(output, desktopName), 'utf8'), `fixture desktop deb ${VERSION}\n`);
     assert.equal(readFileSync(resolve(output, runtimeName), 'utf8'), `fixture AgentSight runtime deb ${RUNTIME_VERSION}\n`);
+    assert.deepEqual(readFileSync(resolve(output, GX_FILENAME)), GX_DEB, 'Copy the verified GX bytes under the official filename');
+    assert.deepEqual(readFileSync(resolve(f.root, 'vendor/gx/linux-x64', GX_FILENAME)), GX_DEB, 'Do not alter the vendored GX input');
+    assert.equal(f.events().find(event => event.kind === 'verify-gx').vendor, resolve(f.root, 'vendor/gx/linux-x64'));
+    assert.equal(f.events().find(event => event.kind === 'verified-gx').version, GX_VERSION);
     const installer = readFileSync(resolve(output, 'install-debs.sh'), 'utf8');
-    assert.doesNotMatch(installer, /@(?:AGENTSIGHT_VERSION|SYSOM_VERSION)@/);
+    assert.doesNotMatch(installer, /@(?:AGENTSIGHT_VERSION|SYSOM_VERSION|GX_VERSION)@/);
+    const template = readFileSync(resolve(f.root, 'sysagent-idc/build/install-debs.sh'), 'utf8');
+    assert.ok(template.includes('@GX_VERSION@'), 'Exercise GX installer placeholder replacement');
+    assert.equal(installer, template.replaceAll('@AGENTSIGHT_VERSION@', RUNTIME_VERSION)
+      .replaceAll('@SYSOM_VERSION@', VERSION).replaceAll('@GX_VERSION@', GX_VERSION));
     assert.ok(installer.includes(desktopName));
     assert.ok(installer.includes(runtimeName));
+    assert.ok(installer.includes(GX_FILENAME));
     const runtime = f.events().find(event => event.kind === 'package-runtime');
     const deb = f.events().find(event => event.kind === 'package-runtime-deb');
     assert.ok(runtime && deb, 'Use both exported runtime packaging helpers');
@@ -362,6 +403,8 @@ function assertNativeArtifacts(f, { desktop, ide }) {
     assert.equal(f.events().some(event => event.kind.startsWith('package-runtime')), false);
     assert.equal(existsSync(resolve(output, `sysagent-idc_${VERSION}_amd64.deb`)), false);
     assert.equal(existsSync(resolve(output, `sysom-agentsight-runtime_${RUNTIME_VERSION}_amd64.deb`)), false);
+    assert.equal(existsSync(resolve(output, GX_FILENAME)), false);
+    assert.equal(existsSync(resolve(output, 'install-debs.sh')), false);
   }
   if (ide) {
     const name = `sysagent-ide-${VERSION}.vsix`;
@@ -421,7 +464,7 @@ test('invalid CLI exits before preflight, npm or artifact generation', t => {
 
 test('fresh web installs only web dependencies with ignore-scripts and copies legal files', t => {
   const f = fixture(t);
-  // Web must not require either native bundle or AgentSight dependency pin.
+  // Web must not require native bundles or AgentSight/GX dependency pins.
   rmSync(resolve(f.root, 'vendor/sysak/linux-x64'), { recursive: true });
   rmSync(resolve(f.root, 'vendor'), { recursive: true });
   updateJson(f.root, 'sysagent-idc/package.json', data => { data.build.deb.depends = []; });
@@ -433,7 +476,7 @@ test('fresh web installs only web dependencies with ignore-scripts and copies le
   assertPreflight(f);
   assertLegal(resolve(f.root, 'sysagent-idc/dist'));
   assert.equal(existsSync(resolve(f.root, 'sysagent-ide-extension/node_modules')), false);
-  assert.equal(f.events().some(event => /^(?:load|verify|package)-(?:sysak|agentsight|runtime)/.test(event.kind)), false);
+  assert.equal(f.events().some(event => /^(?:load|verify|package)-(?:sysak|agentsight|runtime|gx)/.test(event.kind)), false);
   f.assertLatestUnchanged();
 });
 
@@ -546,6 +589,62 @@ test('AgentSight version must match an exact native runtime dependency pin', nat
   });
 });
 
+function assertGxPreflightFailure(f, result) {
+  failed(result);
+  assert.match(result.stderr, /GX|ENOENT/);
+  assert.equal(f.events().filter(event => event.kind === 'verify-gx').length, 1);
+  assert.deepEqual(f.calls(), []);
+  assert.equal(f.events().some(event => event.kind.startsWith('package-runtime')), false);
+  assert.equal(f.events().some(event => /^forbidden-/.test(event.kind)), false);
+  assert.equal(existsSync(resolve(f.root, 'sysagent-idc/dist')), false);
+  assert.equal(existsSync(resolve(f.root, `release/build-${VERSION}`)), false);
+  f.assertLatestUnchanged();
+}
+
+test('missing or corrupt bundled GX fails desktop/all preflight before npm or packaging', nativeOptions, async t => {
+  for (const target of ['desktop', 'all']) {
+    for (const damage of ['missing directory', 'missing manifest', 'missing deb', 'corrupt deb']) {
+      await t.test(`${target}: ${damage}`, t => {
+        const f = fixture(t);
+        const vendor = resolve(f.root, 'vendor/gx/linux-x64');
+        if (damage === 'missing directory') rmSync(vendor, { recursive: true });
+        else if (damage === 'missing manifest') rmSync(resolve(vendor, 'manifest.json'));
+        else if (damage === 'missing deb') rmSync(resolve(vendor, GX_FILENAME));
+        else write(f.root, `vendor/gx/linux-x64/${GX_FILENAME}`, 'corrupted GX bytes');
+        assertGxPreflightFailure(f, f.execute(['--target', target]));
+        assert.equal(f.events().some(event => event.kind === 'verified-gx'), false);
+      });
+    }
+  }
+});
+
+test('GX requires the exact verified version in the main deb dependency pin', nativeOptions, async t => {
+  for (const target of ['desktop', 'all']) {
+    for (const depends of [
+      ['gx (= 0.6.5-1)'],
+      ['gx (= 0.6.5)'],
+      [`gx (>= ${GX_VERSION})`],
+      ['gx'],
+      [],
+    ]) {
+      await t.test(`${target}: ${JSON.stringify(depends)}`, t => {
+        const f = fixture(t);
+        updateJson(f.root, 'sysagent-idc/package.json', data => {
+          data.build.deb.depends = [`sysom-agentsight-runtime (= ${RUNTIME_VERSION})`, 'python3', ...depends];
+        });
+        assertGxPreflightFailure(f, f.execute(['--target', target]));
+        assert.equal(f.events().find(event => event.kind === 'verified-gx').version, GX_VERSION);
+      });
+    }
+    await t.test(`${target}: verified manifest version differs from dependency pin`, t => {
+      const f = fixture(t);
+      updateJson(f.root, 'vendor/gx/linux-x64/manifest.json', data => { data.version = '0.6.5-1'; });
+      assertGxPreflightFailure(f, f.execute(['--target', target]));
+      assert.equal(f.events().find(event => event.kind === 'verified-gx').version, '0.6.5-1');
+    });
+  }
+});
+
 test('native skip-install requires all selected packages before running any npm build', nativeOptions, t => {
   for (const target of ['desktop', 'ide', 'all']) {
     const f = fixture(t);
@@ -556,7 +655,7 @@ test('native skip-install requires all selected packages before running any npm 
   }
 });
 
-test('default all orchestrates main deb, independent runtime deb and VSIX without host installation', nativeOptions, t => {
+test('default all orchestrates main deb, official GX deb, independent runtime deb and VSIX without host installation', nativeOptions, t => {
   const f = fixture(t);
   const result = f.execute();
   succeeded(result);
@@ -566,24 +665,25 @@ test('default all orchestrates main deb, independent runtime deb and VSIX withou
     { folder: 'sysagent-idc', args: ['run', 'build:deb'] },
     { folder: 'sysagent-ide-extension', args: ['run', 'package'] },
   ]);
-  assertPreflight(f, { native: true, runtime: true });
+  assertPreflight(f, { native: true, runtime: true, gx: true });
   assertNativeArtifacts(f, { desktop: true, ide: true });
 });
 
-test('desktop builds only the main and independent runtime debs', nativeOptions, t => {
+test('desktop produces the main, official GX and independent runtime debs without a VSIX', nativeOptions, t => {
   const f = fixture(t);
   succeeded(f.execute(['--target', 'desktop']));
   assert.deepEqual(f.calls(), [
     { folder: 'sysagent-idc', args: CI },
     { folder: 'sysagent-idc', args: ['run', 'build:deb'] },
   ]);
-  assertPreflight(f, { native: true, runtime: true });
+  assertPreflight(f, { native: true, runtime: true, gx: true });
   assertNativeArtifacts(f, { desktop: true, ide: false });
 });
 
-test('fresh IDE ignores install scripts, verifies SysAK and does not need AgentSight', nativeOptions, t => {
+test('fresh IDE ignores install scripts, verifies SysAK and does not need AgentSight or GX', nativeOptions, t => {
   const f = fixture(t);
   rmSync(resolve(f.root, 'vendor/agentsight'), { recursive: true });
+  rmSync(resolve(f.root, 'vendor/gx'), { recursive: true });
   updateJson(f.root, 'sysagent-idc/package.json', data => { data.build.deb.depends = []; });
   succeeded(f.execute(['--target', 'ide']));
   assert.deepEqual(f.calls(), [
@@ -604,7 +704,7 @@ test('all skip-install still verifies native inputs and produces all artifacts',
     { folder: 'sysagent-idc', args: ['run', 'build:deb'] },
     { folder: 'sysagent-ide-extension', args: ['run', 'package'] },
   ]);
-  assertPreflight(f, { native: true, runtime: true });
+  assertPreflight(f, { native: true, runtime: true, gx: true });
   assertNativeArtifacts(f, { desktop: true, ide: true });
 });
 

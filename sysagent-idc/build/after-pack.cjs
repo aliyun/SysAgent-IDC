@@ -58,6 +58,7 @@ module.exports = async function afterPack({ appOutDir }) {
   const files = [
     ...[...FILE_MODES].map(([relative, mode]) => [path.join(root, relative), mode]),
     [path.join(appOutDir, 'resources/sysak-root-runner.py'), 0o755],
+    [path.join(appOutDir, 'resources/gx-runtime.py'), 0o755],
     [path.join(appOutDir, 'resources/sysom-idc.service'), 0o644],
   ];
   for (const [file, mode] of files) {

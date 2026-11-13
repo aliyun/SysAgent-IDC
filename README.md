@@ -9,7 +9,7 @@ SysAgent 是面向 Linux 工作站的本地资源与 Agent 诊断工具，提供
 
 系统资源诊断使用 SysAK 与本地 IDC 服务，Agent 诊断使用独立的 AgentSight 运行时。服务不可用或证据缺失时会明确提示，不把空数据当作健康结论。部分非核心页面仍含演示内容，详见[功能指南](./docs/FUNCTION-USER-GUIDE.md)。
 
-当前版本：**SysAgent 0.2.17 / AgentSight 0.16.0**。
+当前版本：**SysAgent 0.2.18 / AgentSight 0.16.0**。
 
 - [快速开始](#快速开始)
 - [安装与首次运行](#安装与首次运行)
@@ -44,7 +44,7 @@ dpkg-deb --version
 
 克隆本仓库，或通过仓库的 **Code → Download ZIP** 下载并解压完整源码。在包含 `package.json` 的项目根目录打开终端；以下构建命令均在这里执行。
 
-请保留完整的 `vendor/` 目录，包括隐藏的 `.sysak_components/`。仓库提供构建所需的 Linux x64 SysAK 和 AgentSight 预编译输入，**不需要另找上游构建目录、旧安装包或开发缓存，也不需要 Git LFS 或子模块**。不要只下载某个子项目目录。
+请保留完整的 `vendor/` 目录，包括隐藏的 `.sysak_components/`。仓库提供构建所需的 Linux x64 SysAK、AgentSight 预编译输入及官方未修改的 GX 0.6.5-2 deb，**不需要另找上游构建目录、旧安装包或开发缓存，也不需要 Git LFS 或子模块**。不要只下载某个子项目目录。
 
 ### 3. 一键构建
 
@@ -52,13 +52,14 @@ dpkg-deb --version
 npm run build
 ```
 
-无需先在根目录运行 `npm install`：脚本会检查版本、准备并校验 SysAK、在两个子项目执行 `npm ci`、编译源码，再生成：
+无需先在根目录运行 `npm install`：脚本会检查版本、准备并校验 SysAK、校验 AgentSight 和 GX 输入、在两个子项目执行 `npm ci`、编译 SysAgent 源码，再生成三个 deb 与 VSIX：
 
 ```text
-release/build-0.2.17/
-├── sysagent-idc_0.2.17_amd64.deb
+release/build-0.2.18/
+├── sysagent-idc_0.2.18_amd64.deb
+├── gx_0.6.5-2_amd64.deb
 ├── sysom-agentsight-runtime_0.16.0_amd64.deb
-├── sysagent-ide-0.2.17.vsix
+├── sysagent-ide-0.2.18.vsix
 ├── agentsight-runtime/
 ├── install-debs.sh
 ├── SHA256SUMS
@@ -69,18 +70,19 @@ release/build-0.2.17/
 
 | 产物 | 用途 |
 | --- | --- |
-| 主 SysAgent deb | 桌面应用与系统资源采集服务；精确依赖 AgentSight runtime 0.16.0 |
-| AgentSight runtime deb | 独立 AgentSight 配套运行时 |
+| 主 SysAgent deb | 桌面应用与系统资源采集服务；精确依赖 `gx (= 0.6.5-2)` 和 `sysom-agentsight-runtime (= 0.16.0)` |
+| GX deb | 官方未修改的 GX 0.6.5-2 原生运行时，随本批次再分发 |
+| AgentSight runtime deb | 独立 AgentSight 配套运行时，版本仍为 0.16.0 |
 | VSIX | IDE 插件；包含 SysAK，不内嵌 AgentSight |
 | `agentsight-runtime/` | 独立配套目录，含二进制、manifest、许可及部署工具 |
 | `install-debs.sh` / `SHA256SUMS` | 同批次安装入口与完整性校验 |
 
-`npm run release` 使用同一入口。构建只编译和打包，**不安装系统服务、不开启真实采集、不结束进程、不上传发布件**。此入口使用随仓库提供的 SysAK/AgentSight 二进制，不重新编译这两个上游项目，也不生成 AppImage。
+`npm run release` 使用同一入口。构建只编译和打包，**不安装系统服务、不开启真实采集、不结束进程、不上传发布件**。此入口使用随仓库提供的 SysAK/AgentSight 二进制及官方未修改的 GX deb，不进行 SysAK、AgentSight、GX 或完整上游 coolbpf 的重新编译，也不生成 AppImage。
 
 只需要部分产物时：
 
 ```bash
-npm run build:desktop              # 主 deb + AgentSight runtime deb
+npm run build:desktop              # 主 deb + GX deb + AgentSight runtime deb
 npm run build:ide                  # 仅 VSIX
 npm run build:web                  # 仅网页生产构建，不下载 Electron 二进制
 npm run build -- --skip-install    # 已安装依赖后复用；首次构建不要使用
@@ -93,14 +95,14 @@ Electron 下载默认使用项目内置镜像，可用 `ELECTRON_MIRROR`、`ELEC
 
 ## 安装与首次运行
 
-已有可信来源的发布包时可以跳过构建，在包含两个 deb、安装脚本和 `SHA256SUMS` 的产物目录执行以下步骤。生成安装包并不等于安装，修改源码也不会更新已安装程序。
+已有可信来源的发布包时可以跳过构建，在包含三个 deb（GX、AgentSight runtime、主 SysAgent）、安装脚本和 `SHA256SUMS` 的产物目录执行以下步骤。生成安装包并不等于安装，修改源码也不会更新已安装程序。
 
 ### 1. 校验产物
 
 从项目根目录进入本次构建目录：
 
 ```bash
-cd release/build-0.2.17
+cd release/build-0.2.18
 sha256sum --check SHA256SUMS
 ```
 
@@ -115,20 +117,22 @@ sh ./install-debs.sh
 sysagent-idc
 ```
 
-按提示提供管理员授权，随后也可从应用菜单打开“SysAgent管家”。**不要只安装主 deb**：它依赖同批次 AgentSight runtime deb。
+按提示提供管理员授权，随后也可从应用菜单打开“SysAgent管家”。**不要只安装主 deb**：它精确依赖 GX 0.6.5-2 和同批次 AgentSight runtime 0.16.0。安装入口离线安装三个本地 deb，顺序为 **GX → AgentSight runtime → 主 SysAgent**。
 
-安装入口只安装本地包，不联网补齐系统依赖，也不自动回滚。缺少系统库时先由管理员补齐，再重新运行安装入口；不要强制跳过依赖、禁用沙箱或用 `sudo` 启动 GUI。
+仅在包安装阶段，root 辅助程序 `sysagent-idc/build/gx-runtime.py` 验证 GX 已配置为 `install ok installed` 且版本为 `0.6.5-2`，检查 `/usr/bin/gx`、`/usr/lib64/libgx.so`、`/usr/lib64/libgx_client.so`、`/usr/lib64/libgx_nvinfo.bin`、`/usr/lib64/libgx_amdinfo.bin` 和 `/etc/libgx.yaml` 的存在及路径安全性，并确认 GX 可执行。随后创建 `/etc/ld.so.conf.d/sysagent-gx.conf`（内容为 `/usr/lib64` 加换行；已有文件须内容一致且安全），执行 `ldconfig`。`/usr/share/gx/lib` 是 GX 可执行文件的 RPATH，不加入全局动态库加载路径。
+
+GX 原生组件实际需要 glibc 2.27+、`zlib1g` 和 `libzstd1`；主 SysAgent deb 补充声明这些运行库依赖，不修改官方 GX 包。安装入口不联网下载或补齐系统依赖，也不自动回滚。缺少系统库时先由管理员补齐，再重新运行安装入口；不要强制跳过依赖、禁用沙箱或用 `sudo` 启动 GUI。GUI 启动不会下载 GX、提权或执行上述 root 辅助程序。包安装与动态库路径就绪不证明 GPU 跟踪可用；真实 GPU 跟踪仍依赖硬件和驱动，本次未证明其可用性。
 
 默认安装不会启用新的主机级 Agent 调用采集。升级保留已有配置、数据和授权选择；安装前请彻底退出旧客户端。直接以 root 登录安装不能作为首次普通用户授权的默认方式。
 
 ### 3. 安装 IDE 插件（可选）
 
-推荐先安装两个 deb，再在 IDE 命令面板选择 **Extensions: Install from VSIX… / 扩展: 从 VSIX 安装…**，选择 `sysagent-ide-0.2.17.vsix`，按提示重载 IDE。
+推荐先安装三个 deb，再在 IDE 命令面板选择 **Extensions: Install from VSIX… / 扩展: 从 VSIX 安装…**，选择 `sysagent-ide-0.2.18.vsix`，按提示重载 IDE。
 
 VS Code 用户也可在产物目录执行：
 
 ```bash
-code --install-extension ./sysagent-ide-0.2.17.vsix
+code --install-extension ./sysagent-ide-0.2.18.vsix
 ```
 
 点击状态栏 SysAgent 入口，或执行 **SysAgent管家: 打开体检主页**。无需同时运行桌面应用。插件诊断本地扩展宿主所在机器，不自动诊断远程工作区；相同 HOME/XDG 环境下，两端共享 AgentSight 用户目录，但巡检设置各自保存。
@@ -137,7 +141,7 @@ code --install-extension ./sysagent-ide-0.2.17.vsix
 
 ```bash
 sudo dpkg --install ./sysom-agentsight-runtime_0.16.0_amd64.deb
-code --install-extension ./sysagent-ide-0.2.17.vsix
+code --install-extension ./sysagent-ide-0.2.18.vsix
 ```
 
 此方式不提供系统资源采集服务；VSIX 本身不会安装系统服务。
@@ -209,9 +213,9 @@ npm run test:api
 npm run check:versions
 ```
 
-`npm test` 运行隔离构建流程测试，`test:api` 运行只读查询/API 回归，不安装系统服务或发起真实采集。已在 Linux x64、Node.js 22.23.1 / npm 10.9.8 上验证：不含 Git、依赖、生成资源或旧发布件的完整源码快照能够生成两个 deb 与 VSIX，49 项构建测试和 37 项查询/API 测试通过。
+`npm test` 运行隔离构建流程测试，`test:api` 运行只读查询/API 回归，不安装系统服务或发起真实采集。此前在 Linux x64、Node.js 22.23.1 / npm 10.9.8 上记录过 49 项构建测试和 37 项查询/API 测试通过；该历史记录不等于 0.2.18 的完整构建验收。当前完整构建目标为三个 deb 与 VSIX，使用预编译输入，不是完整上游源码重编译。
 
-该验证不包含安装、图形界面或真实采集验收。部分历史模块测试依赖未纳入仓库的参考夹具，不属于根目录测试范围；历史 Demo 发行脚本不是当前构建入口。
+历史验证不包含安装、图形界面或真实采集验收，也不证明依赖硬件与驱动的 GX GPU 跟踪可用。部分历史模块测试依赖未纳入仓库的参考夹具，不属于根目录测试范围；历史 Demo 发行脚本不是当前构建入口。
 
 ### 目录与文档
 
@@ -222,6 +226,8 @@ npm run check:versions
 | [scripts/build.mjs](./scripts/build.mjs) | 统一构建入口 |
 | [vendor/sysak/linux-x64/](./vendor/sysak/linux-x64/) | SysAK 完整构建输入与 manifest |
 | [vendor/agentsight/linux-x64/](./vendor/agentsight/linux-x64/) | AgentSight 二进制、manifest 与许可 |
+| [vendor/gx/linux-x64/](./vendor/gx/linux-x64/) | 官方未修改的 GX 0.6.5-2 deb 与 manifest |
+| [scripts/coolbpf-gx-0.6.5-2.patch](./scripts/coolbpf-gx-0.6.5-2.patch) | 不含凭据的上游 coolbpf 限定范围补丁；非完整上游源码 |
 | [功能指南](./docs/FUNCTION-USER-GUIDE.md) | 功能与指标解释 |
 | [本机 HTTP API](./docs/LOCAL-HTTP-API.md) | 只读接口与第三方接入 |
 | [IDC 设计](./docs/SYSAGENT-IDC-OPENAPI-DETAILED-DESIGN.md) | 资源采集与接口设计 |
@@ -230,7 +236,7 @@ npm run check:versions
 
 | 问题 | 处理方式 |
 | --- | --- |
-| 构建提示缺少 SysAK / AgentSight | 重新获取完整仓库，检查 vendor 子目录和 manifest，不以旧 deb 或本机缓存替代 |
+| 构建提示缺少 SysAK / AgentSight / GX | 重新获取完整仓库，检查 vendor 子目录、manifest 和校验值，不以旧 deb 或本机缓存替代 |
 | Electron 下载失败 | 检查网络及镜像环境变量，成功安装依赖后才使用 `--skip-install` |
 | deb 依赖无法满足 | 核对 x64、glibc 与系统库；不要单装主 deb 或跳过依赖 |
 | AgentSight 配套安装件缺失 | 重新执行同批次 `install-debs.sh`，彻底退出客户端后重启 |
@@ -244,19 +250,24 @@ npm run check:versions
 
 ## 源码交付与许可
 
-**构建输入必须提交，生成安装包单独分发：**
+**构建输入（含官方未修改的 GX deb）随源码提供，SysAgent 生成安装包单独分发：**
 
 - `vendor/sysak/linux-x64/` 全部 **25 个文件**随源码提交：包括 `sysak`、隐藏的 `.sysak_components/` 及其中的原生/Python 组件、规则和配置，以及 `manifest.json`。
 - `vendor/agentsight/linux-x64/` 全部 **3 个文件**随源码提交：`agentsight`、`manifest.json`、`LICENSE`。不能只提交 manifest 或让二进制留在本机未跟踪目录。
-- 共 28 项必要输入不被 `.gitignore` 排除，无需 Git LFS。更新输入时同步 manifest，并验证完整构建；不要遗漏隐藏组件。
+- `vendor/gx/linux-x64/` 全部 **2 个文件**随源码提供：官方未修改的 `gx_0.6.5-2_amd64.deb` 和 `manifest.json`。该 deb 来自 SysAK AI 上游构建输入，包元数据为 `gx` / `0.6.5-2` / `amd64`，维护者为 `alibaba-cloud`；原样再分发，不分发获取时的签名 URL 或签名参数。
+- 共 **30 项必要 vendor 输入**（25 + 3 + 2）不被 `.gitignore` 排除，无需 Git LFS。更新输入时同步 manifest，并验证完整构建；不要遗漏隐藏组件。
+- GX deb 的 SHA-256：`a471bf61863c61744b102ba19a8620feea68d9aeaab8591c9d056f3cbe5b1902`；构建时校验 manifest 与文件哈希，复制到产物目录时不修改包。
+- `scripts/coolbpf-gx-0.6.5-2.patch` 保留限定范围的上游 coolbpf 改动：GX 版本/已配置状态检查、包缓存与哈希验证。补丁不含凭据或签名 URL；完整上游源码未随仓库提供，补丁不代表完整对应源码交付，根构建入口不据此重新编译完整上游项目。
 - `sysagent-idc/resources/sysak/` 从 vendor 安全生成，不作为源码输入提交。
 - `release/` 及子项目 `release/` 是生成安装包目录，保持 Git 忽略；通过项目发布资产渠道单独分发。依赖、编译输出、私人配置、数据库和开发缓存同样不提交。
 
 维护者提交源码时可显式加入并核对完整输入：
 
 ```bash
-git add -- vendor/sysak/linux-x64 vendor/agentsight/linux-x64
-git ls-files -- vendor/sysak/linux-x64 vendor/agentsight/linux-x64
+git add -- vendor/sysak/linux-x64 vendor/agentsight/linux-x64 vendor/gx/linux-x64 scripts/coolbpf-gx-0.6.5-2.patch
+git ls-files -- vendor/sysak/linux-x64 vendor/agentsight/linux-x64 vendor/gx/linux-x64 scripts/coolbpf-gx-0.6.5-2.patch
 ```
 
-SysAgent 原创代码采用 [MIT](./LICENSE)。SysAK、AgentSight、Electron、字体等第三方组件遵循自身许可，不因项目 MIT 而重新授权；分发时保留 [THIRD_PARTY_NOTICES](./THIRD_PARTY_NOTICES)、[FONT_LICENSE](./FONT_LICENSE) 和 [AgentSight LICENSE](./vendor/agentsight/linux-x64/LICENSE)。参考 UI 与素材的来源和授权说明见第三方声明。
+SysAgent 原创代码采用 [MIT](./LICENSE)。SysAK、AgentSight、GX、Electron、字体等第三方组件及上游 coolbpf 补丁所涉及的源文件遵循自身许可，不因项目 MIT 而重新授权；分发时保留 [THIRD_PARTY_NOTICES](./THIRD_PARTY_NOTICES)、[FONT_LICENSE](./FONT_LICENSE) 和 [AgentSight LICENSE](./vendor/agentsight/linux-x64/LICENSE)。参考 UI 与素材的来源和授权说明见第三方声明。
+
+已获用户授权公开再分发官方未修改的 GX deb；这是分发操作授权，不是对上游许可的替代或新许可授予。已检查的 GX RPM 元数据许可字段原文为 `LBPLv2+` 和 `MIT`，不将前者擅自更正或据此认定整个 GX 为 MIT；已检查的 GX deb 缺少完整的 copyright/license 文件。不能因文件缺失推断 GX 为专有软件，也不能用 SysAgent 的 MIT 为 GX 或上游源代码重新授权。保留上游版权和许可信息，适用的通知及对应源码义务仍需依据上游实际许可确认；原样分发和本地补丁不消除这些义务。

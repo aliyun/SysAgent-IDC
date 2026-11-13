@@ -1,6 +1,6 @@
 # 开发说明
 
-当前交付版本为 **SysAgent 0.2.17 / AgentSight 0.16.0**，发布批次为 `sysagent-idc/release/idc-0.2.17-sysagent-20261113/`，完整离线包为 `SysAgent管家-0.2.17-linux-x64-offline.tar.gz`。安装入口见[根 README](../README.md)，当前打包边界见[打包说明](./PACKAGING.md)。本文保留早期 Demo 开发和验收工具记录；其中模拟业务、版本、测试数量与统一 Demo 发行命令不代表当前真实版行为或 0.2.17 验收。
+当前交付版本为 **SysAgent 0.2.18 / GX 0.6.5-2 / AgentSight 0.16.0**，发布批次为 `release/build-0.2.18/`，完整离线发布归档为 `release/SysAgent-0.2.18-linux-x64-offline.tar.gz`。在项目根目录使用 `npm run build`；使用完整 `vendor/` 输入，不需要上游缓存。安装入口见[根 README](../README.md)，当前打包边界见[打包说明](./PACKAGING.md)。下文保留早期 Demo 开发和验收工具记录；其中模拟业务、历史版本、测试数量与旧 Demo 发行命令不代表 0.2.18 的行为或验收。
 
 ## 环境
 

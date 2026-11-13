@@ -1,6 +1,6 @@
 {
   "name": "sysagent-releases",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "private": true,
   "license": "MIT",
   "description": "SysAgent 所有本地发行版的统一版本和构建入口",
@@ -14,7 +14,7 @@
     "build:web": "node scripts/build.mjs --target web",
     "dev": "npm --prefix sysagent-idc run dev:web",
     "preview": "npm --prefix sysagent-idc run preview -- --host 127.0.0.1 --port 4173 --strictPort",
-    "test": "node --test scripts/build.test.mjs",
+    "test": "node --test scripts/build.test.mjs scripts/gx-package.test.cjs",
     "test:api": "npm --prefix sysagent-idc run build:openapi && node --test sysagent-idc/tests/query-data.test.cjs sysagent-idc/tests/local-query-api.test.cjs",
     "sync:versions": "node scripts/sync-versions.mjs",
     "check:versions": "node scripts/sync-versions.mjs --check",

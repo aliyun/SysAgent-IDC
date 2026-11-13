@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "platform": "linux",
+  "arch": "x64",
+  "package": "gx",
+  "version": "0.6.5-2",
+  "filename": "gx_0.6.5-2_amd64.deb",
+  "sha256": "a471bf61863c61744b102ba19a8620feea68d9aeaab8591c9d056f3cbe5b1902",
+  "provenance": "Unmodified upstream GX DEB from the SysAK AI build input; signed retrieval parameters are not distributed."
+}

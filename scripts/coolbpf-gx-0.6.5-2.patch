@@ -1,0 +1,245 @@
+diff --git a/src/collection_framework/build.rs b/src/collection_framework/build.rs
+index 46425d29..ef7fde29 100644
+--- a/src/collection_framework/build.rs
++++ b/src/collection_framework/build.rs
+@@ -174,23 +174,34 @@ fn build_gx_plugin() {
+-    if !gx_path.exists() {
+-        std::fs::create_dir_all(&gx_path).expect("Failed to create gx directory");
+-    }
+-
+-    // 指定完整的目标文件路径
+-    let target_file_rpm = gx_path.join("gx.rpm");
+-    let target_file_deb = gx_path.join("gx.deb");
+-
+-    // 如果目标文件已存在，先删除它以确保能正确覆盖
+-    if target_file_rpm.exists() {
+-        let _ = std::fs::remove_file(&target_file_rpm);
+-    }
+-    if target_file_deb.exists() {
+-        let _ = std::fs::remove_file(&target_file_deb);
+-    }
+-
+-    let output_rpm = Command::new("wget")
+-        .args(&["-O", target_file_rpm.to_str().unwrap(), gx_rpm_url])
+-        .output();
+-
+-    match output_rpm {
+-        Ok(_) => {
+-            println!("Downloading gx.rpm plugin from {} success", gx_rpm_url);
++    std::fs::create_dir_all(&gx_path).expect("Failed to create gx directory");
++
++    // Preserve stored signatures; reject legacy sources unless an updated input is supplied.
++    for (variable, legacy_url, name, expected) in [
++        (
++            "GX_RPM_URL",
++            gx_rpm_url,
++            "gx.rpm",
++            "2a4e15af75a9280254f82c3f6c295f778d615df15f2ef7c1054f158570895697",
++        ),
++        (
++            "GX_DEB_URL",
++            gx_deb_url,
++            "gx.deb",
++            "a471bf61863c61744b102ba19a8620feea68d9aeaab8591c9d056f3cbe5b1902",
++        ),
++    ] {
++        println!("cargo:rerun-if-env-changed={}", variable);
++        let target = gx_path.join(name);
++        println!("cargo:rerun-if-changed={}", target.display());
++        let verified = |path: &std::path::Path| {
++            let output = Command::new("sha256sum")
++                .arg("--")
++                .arg(path)
++                .output()
++                .expect("sha256sum is required to verify GX packages");
++            output.status.success()
++                && String::from_utf8_lossy(&output.stdout)
++                    .split_whitespace()
++                    .next()
++                    == Some(expected)
++        };
++        if target.is_file() && verified(&target) {
++            continue;
+@@ -198,15 +209,19 @@ fn build_gx_plugin() {
+-        Err(err) => {
+-            println!("Failed to download gx.rpm plugin: {}", err);
+-        }
+-    }
+-
+-    let output_deb = Command::new("wget")
+-        .args(&["-O", target_file_deb.to_str().unwrap(), gx_deb_url])
+-        .output();
+-
+-    match output_deb {
+-        Ok(_) => {
+-            println!("Downloading gx.deb plugin from {} success", gx_deb_url);
+-        }
+-        Err(err) => {
+-            println!("Failed to download gx.deb plugin: {}", err);
++        let source = env::var(variable).unwrap_or_else(|_| legacy_url.to_owned());
++        assert!(
++            source != legacy_url,
++            "GX 0.6.5-2 requires {}; the legacy package source is not accepted",
++            variable
++        );
++        let incoming = gx_path.join(format!("{}.download", name));
++        let output = Command::new("wget")
++            .arg("--timeout=60")
++            .arg("--tries=2")
++            .arg("-O")
++            .arg(&incoming)
++            .arg("--")
++            .arg(&source)
++            .output()
++            .expect("Failed to start GX package download");
++        if !output.status.success() || !verified(&incoming) {
++            let _ = std::fs::remove_file(&incoming);
++            panic!("GX 0.6.5-2 {} download or checksum verification failed", name);
+@@ -213,0 +229,2 @@ fn build_gx_plugin() {
++        std::fs::rename(&incoming, &target).expect("Failed to stage verified GX package");
++        println!("GX 0.6.5-2 {} verified", name);
+diff --git a/src/collection_framework/src/const.rs b/src/collection_framework/src/const.rs
+index ebbe970d..a98d6749 100644
+--- a/src/collection_framework/src/const.rs
++++ b/src/collection_framework/src/const.rs
+@@ -11 +11 @@ pub const PYKI_VERSION_IN: &'static str = "0.2.33";
+-pub const GX_VERSION: &'static str = "0.6.2";
++pub const GX_VERSION: &'static str = "0.6.5-2";
+diff --git a/src/collection_framework/src/tools/utils.rs b/src/collection_framework/src/tools/utils.rs
+index 66311578..f24d9023 100644
+--- a/src/collection_framework/src/tools/utils.rs
++++ b/src/collection_framework/src/tools/utils.rs
+@@ -589,0 +590,9 @@ pub fn detect_distro_type() -> Result<&'static str> {
++fn gx_package_is_current(metadata: &str, rpm: bool) -> bool {
++    let expected = if rpm {
++        format!("{}.al8", r#const::GX_VERSION)
++    } else {
++        format!("install ok installed\t{}", r#const::GX_VERSION)
++    };
++    metadata.trim() == expected
++}
++
+@@ -591 +599,0 @@ pub fn check_and_install_rpm_gx(pid: i32) -> Result<()> {
+-    // 获取 RPM 文件中的包名和版本
+@@ -594,18 +602,7 @@ pub fn check_and_install_rpm_gx(pid: i32) -> Result<()> {
+-    let pkg_name: &'static str = "gx";
+-
+-    let check_cmd = Command::new("rpm").arg("-qi").arg(pkg_name).output()?;
+-
+-    if check_cmd.status.success() {
+-        // 包已经安装，检查版本
+-        let mut installed_version = "";
+-        let output_str = String::from_utf8_lossy(&check_cmd.stdout);
+-        for line in output_str.lines() {
+-            if line.starts_with("Version") {
+-                installed_version = line.split(':').nth(1).unwrap_or("").trim();
+-            }
+-        }
+-
+-        // NOTE: 这个地方改为只要版本不一致，就重新安装，而非 >=
+-        if installed_version != r#const::GX_VERSION {
+-            return Ok(());
+-        }
++    let check_cmd = Command::new("rpm")
++        .args(["-q", "--queryformat", "%{VERSION}-%{RELEASE}", "gx"])
++        .output()?;
++    if check_cmd.status.success()
++        && gx_package_is_current(&String::from_utf8_lossy(&check_cmd.stdout), true)
++    {
++        return Ok(());
+@@ -614,4 +611,3 @@ pub fn check_and_install_rpm_gx(pid: i32) -> Result<()> {
+-    let mut binding = Command::new("yum");
+-    let cmd = binding.arg("install").arg("-y").arg(rpm_file);
+-
+-    let output = cmd.output()?;
++    let output = Command::new("yum")
++        .args(["install", "-y", rpm_file])
++        .output()?;
+@@ -626 +622,12 @@ pub fn check_and_install_rpm_gx(pid: i32) -> Result<()> {
+-    log::info!("Installed gx success ");
++    let installed = Command::new("rpm")
++        .args(["-q", "--queryformat", "%{VERSION}-%{RELEASE}", "gx"])
++        .output()?;
++    if !installed.status.success()
++        || !gx_package_is_current(&String::from_utf8_lossy(&installed.stdout), true)
++    {
++        return Err(ErrorCode::GXInstallError(Some(
++            "GX 0.6.5-2.al8 is not installed".to_owned(),
++        ))
++        .into_error());
++    }
++    log::info!("Installed gx success");
+@@ -631 +637,0 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
+-    // 获取 DEB 文件路径
+@@ -634,3 +639,0 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
+-    let pkg_name: &'static str = "gx";
+-
+-    // 检查包是否已经安装
+@@ -638,3 +641 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
+-        .arg("-W")
+-        .arg("-f=${Version}")
+-        .arg(pkg_name)
++        .args(["-W", "-f=${Status}\t${Version}", "gx"])
+@@ -642,9 +643,4 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
+-
+-    if check_cmd.status.success() {
+-        // 包已经安装，检查版本
+-        let installed_version = String::from_utf8_lossy(&check_cmd.stdout);
+-
+-        // NOTE: 这个地方改为只要版本不一致，就重新安装，而非 >=
+-        if installed_version.trim() != r#const::GX_VERSION {
+-            return Ok(());
+-        }
++    if check_cmd.status.success()
++        && gx_package_is_current(&String::from_utf8_lossy(&check_cmd.stdout), false)
++    {
++        return Ok(());
+@@ -653,5 +649 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
+-    // 安装 deb 包
+-    let mut binding = Command::new("dpkg");
+-    let cmd = binding.arg("-i").arg(deb_file);
+-
+-    let output = cmd.output()?;
++    let output = Command::new("dpkg").args(["-i", deb_file]).output()?;
+@@ -666 +658,12 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
+-    log::info!("Installed gx success ");
++    let installed = Command::new("dpkg-query")
++        .args(["-W", "-f=${Status}\t${Version}", "gx"])
++        .output()?;
++    if !installed.status.success()
++        || !gx_package_is_current(&String::from_utf8_lossy(&installed.stdout), false)
++    {
++        return Err(ErrorCode::GXInstallError(Some(
++            "GX 0.6.5-2 is not configured".to_owned(),
++        ))
++        .into_error());
++    }
++    log::info!("Installed gx success");
+@@ -669,0 +673,27 @@ pub fn check_and_install_deb_gx(pid: i32) -> Result<()> {
++#[cfg(test)]
++mod gx_version_tests {
++    use super::gx_package_is_current;
++
++    #[test]
++    fn deb_requires_the_exact_configured_version() {
++        assert!(gx_package_is_current("install ok installed\t0.6.5-2\n", false));
++        for metadata in [
++            "install ok installed\t0.6.2-5",
++            "install ok unpacked\t0.6.5-2",
++            "deinstall ok config-files\t0.6.5-2",
++            "install ok installed\t0.6.5-3",
++            "",
++        ] {
++            assert!(!gx_package_is_current(metadata, false));
++        }
++    }
++
++    #[test]
++    fn rpm_checks_both_version_and_release() {
++        assert!(gx_package_is_current("0.6.5-2.al8\n", true));
++        for metadata in ["0.6.2-5.al8", "0.6.5", "0.6.5-1.al8", "0.6.5-2.al9", ""] {
++            assert!(!gx_package_is_current(metadata, true));
++        }
++    }
++}
++

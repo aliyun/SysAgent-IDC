@@ -61,6 +61,7 @@ function fixture(t, options = {}) {
   const python = path.join(bin, 'python3');
   const log = path.join(directory, 'operations.jsonl');
   const packages = [
+    path.join(directory, 'gx_0.0-fixture_amd64.deb'),
     path.join(directory, 'sysom-agentsight-runtime_0.0-fixture_amd64.deb'),
     path.join(directory, 'sysagent-idc_0.0-fixture_amd64.deb'),
   ];
@@ -70,7 +71,8 @@ function fixture(t, options = {}) {
     .replace(pythonPath, shellQuote(python))
     .replace(managerPath, shellQuote(manager))
     .replaceAll('@AGENTSIGHT_VERSION@', '0.0-fixture')
-    .replaceAll('@SYSOM_VERSION@', '0.0-fixture'));
+    .replaceAll('@SYSOM_VERSION@', '0.0-fixture')
+    .replaceAll('@GX_VERSION@', '0.0-fixture'));
   fs.writeFileSync(manager, '# Inert path argument; never executed.\n');
   fs.writeFileSync(log, '');
   for (const filename of packages) fs.writeFileSync(filename, 'inert local deb fixture');
@@ -121,13 +123,13 @@ function assertInstalled(f, result, { ordinary = false, uid } = {}) {
   if (uid !== undefined) commands.push('python3');
   assert.deepEqual(result.events.map(event => event.command), commands, result.stderr);
   const dpkg = result.events.find(event => event.command === 'dpkg');
-  assert.deepEqual(dpkg.args, ['--install', ...f.packages], 'runtime and main local packages installed together, in order');
+  assert.deepEqual(dpkg.args, ['--install', ...f.packages], 'GX, runtime and main local packages installed together, in order');
   if (uid !== undefined) {
     assert.deepEqual(result.events.at(-1).args, ['-I', f.manager, 'enable', '--uid', uid, '--accept-host-capture']);
   }
 }
 
-test('offline installer: default installs both local debs without enrollment or config changes', t => {
+test('offline installer: default installs all three local debs without enrollment or config changes', t => {
   const f = fixture(t, { env: { SYSOM_IDC_UID: '0', SUDO_UID: 'not-a-uid' } });
   const result = f.run();
   assert.equal(result.status, 0, result.stderr);

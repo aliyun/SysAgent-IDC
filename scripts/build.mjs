@@ -55,7 +55,7 @@ export async function main(args = process.argv.slice(2)) {
   if (options.help) {
     console.log(`用法：npm run build -- [选项]
 
-  --target all|desktop|ide|web  默认 all：主 deb、AgentSight runtime deb、VSIX
+  --target all|desktop|ide|web  默认 all：主 deb、GX deb、AgentSight runtime deb、VSIX
   --skip-install              复用已安装的依赖；首次构建不要使用
   --help, -h                  显示帮助
 
@@ -86,12 +86,15 @@ Linux x64、Node.js 20+，原生构建输入已随源码提供。
     verifyBundle(resolve(root, 'sysagent-idc/resources/sysak'));
   }
   let runtime;
+  let gx;
   const vendor = resolve(root, 'vendor/agentsight/linux-x64');
   if (desktop) {
     if (!existsSync(vendor)) throw new Error('缺少 AgentSight 构建输入；请完整获取 vendor/agentsight/linux-x64');
     runtime = await require(resolve(root, 'sysagent-idc/electron/agentsight-deployment.cjs')).verifyAgentSightPackage(vendor);
     const guard = JSON.parse(readFileSync(resolve(root, 'sysagent-idc/package.json'), 'utf8'));
     if (!guard.build.deb.depends.includes(`sysom-agentsight-runtime (= ${runtime.manifest.version})`)) throw new Error('AgentSight runtime 版本与主 deb 依赖不一致');
+    gx = require(resolve(root, 'scripts/gx-package.cjs')).verifyGxPackage(resolve(root, 'vendor/gx/linux-x64'));
+    if (!guard.build.deb.depends.includes(`gx (= ${gx.manifest.version})`)) throw new Error('GX 版本与主 deb 依赖不一致');
   }
   if (!options.skipInstall) {
     const install = ['ci', '--include=dev', '--no-audit', '--no-fund'];
@@ -109,6 +112,8 @@ Linux x64、Node.js 20+，原生构建输入已随源码提供。
       const filename = `sysagent-idc_${version}_amd64.deb`;
       copyFileSync(resolve(root, 'sysagent-idc/release', filename), resolve(output, filename));
       artifacts.push(filename);
+      copyFileSync(gx.binary, resolve(output, gx.manifest.filename));
+      artifacts.push(gx.manifest.filename);
       const staging = mkdtempSync(resolve(root, 'release/.runtime-build-'));
       try {
         const directory = resolve(staging, 'agentsight-runtime');
@@ -120,7 +125,8 @@ Linux x64、Node.js 20+，原生构建输入已随源码提供。
         copyFileSync(resolve(staging, filename), resolve(output, filename));
         artifacts.push(filename, ...['agentsight', 'manifest.json', 'LICENSE', 'agentsight-deployment.cjs', 'install.cjs'].map(name => `agentsight-runtime/${name}`));
         const installer = readFileSync(resolve(root, 'sysagent-idc/build/install-debs.sh'), 'utf8')
-          .replaceAll('@AGENTSIGHT_VERSION@', runtime.manifest.version).replaceAll('@SYSOM_VERSION@', version);
+          .replaceAll('@AGENTSIGHT_VERSION@', runtime.manifest.version).replaceAll('@SYSOM_VERSION@', version)
+          .replaceAll('@GX_VERSION@', gx.manifest.version);
         writeFileSync(resolve(output, 'install-debs.sh'), installer, { mode: 0o755 });
         artifacts.push('install-debs.sh');
       } finally {

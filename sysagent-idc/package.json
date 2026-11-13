@@ -1,6 +1,6 @@
 {
   "name": "sysagent-idc",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "private": true,
   "license": "MIT",
   "description": "SysAgent管家 - 本地 AI 工作站智能运维桌面应用",
@@ -73,6 +73,10 @@
         "to": "sysak-root-runner.py"
       },
       {
+        "from": "build/gx-runtime.py",
+        "to": "gx-runtime.py"
+      },
+      {
         "from": "build/sysom-idc.service",
         "to": "sysom-idc.service"
       }
@@ -93,6 +97,11 @@
       "afterRemove": "build/after-remove.sh",
       "depends": [
         "sysom-agentsight-runtime (= 0.16.0)",
+        "gx (= 0.6.5-2)",
+        "libc-bin",
+        "libc6 (>= 2.27)",
+        "zlib1g",
+        "libzstd1",
         "libgtk-3-0",
         "libnotify4",
         "libnss3",

@@ -912,6 +912,7 @@ function packedFixture(t) {
   fs.mkdirSync(path.dirname(bundle), { recursive: true });
   fs.cpSync(f.bundle, bundle, { recursive: true });
   write(path.join(appOutDir, 'resources/sysak-root-runner.py'), '# inert root helper fixture\n', 0o664);
+  write(path.join(appOutDir, 'resources/gx-runtime.py'), '# inert GX helper fixture\n', 0o664);
   write(path.join(appOutDir, 'resources/sysom-idc.service'), '# inert unit fixture\n', 0o660);
   for (const [relative, mode] of Object.entries(modeSnapshot(bundle))) {
     fs.chmodSync(path.join(bundle, relative), mode & 0o111 ? 0o775 : 0o664);
@@ -942,7 +943,7 @@ test('afterPack normalizes sysAK and deployment ancestor modes, preserves unrela
   for (const [relative, mode] of Object.entries(modeSnapshot(f.appOutDir))) {
     if (relative === '' || relative === 'resources') {
       assert.equal(mode, 0o755, `deployment ancestor: ${relative}`);
-    } else if (relative === 'resources/sysak-root-runner.py' || relative === 'resources/sysom-idc.service') {
+    } else if (relative === 'resources/sysak-root-runner.py' || relative === 'resources/gx-runtime.py' || relative === 'resources/sysom-idc.service') {
       assert.equal(mode, relative.endsWith('.py') ? 0o755 : 0o644, relative);
     } else if (relative !== 'resources/sysak' && !relative.startsWith('resources/sysak/')) {
       assert.equal(mode, before[relative], `unrelated path: ${relative}`);
@@ -963,6 +964,7 @@ for (const [label, relative] of [
   ...EXPECTED_FILES.map(relative => [`required file ${relative}`, `resources/sysak/${relative}`]),
   ['manifest', 'resources/sysak/manifest.json'],
   ['root helper', 'resources/sysak-root-runner.py'],
+  ['GX helper', 'resources/gx-runtime.py'],
   ['service unit', 'resources/sysom-idc.service'],
 ]) {
   test(`afterPack rejects a symlink at ${label} before any chmod`, async t => {
@@ -1030,6 +1032,7 @@ test('packaging configuration, build ordering and hooks match the application in
   assert.deepEqual(pkg.build.extraResources, [
     { from: 'resources/sysak', to: 'sysak', filter: ['**/*'] },
     { from: 'build/sysak-root-runner.py', to: 'sysak-root-runner.py' },
+    { from: 'build/gx-runtime.py', to: 'gx-runtime.py' },
     { from: 'build/sysom-idc.service', to: 'sysom-idc.service' },
   ]);
   assert.equal(pkg.scripts['prepare:sysak'], 'node scripts/prepare-sysak.cjs');
@@ -1039,7 +1042,7 @@ test('packaging configuration, build ordering and hooks match the application in
   assert.equal(pkg.scripts.build, 'npm run build:openapi && tsc -b && vite build');
   assert.equal(pkg.scripts.dev, 'npm run build:openapi && concurrently -k "vite" "wait-on tcp:127.0.0.1:5173 && electron ."');
   assert.ok(!pkg.build.deb.depends.includes('pkexec'));
-  for (const dependency of ['sysom-agentsight-runtime (= 0.16.0)', 'python3', 'coreutils', 'systemd']) {
+  for (const dependency of ['sysom-agentsight-runtime (= 0.16.0)', 'gx (= 0.6.5-2)', 'libc-bin', 'libc6 (>= 2.27)', 'zlib1g', 'libzstd1', 'python3', 'coreutils', 'systemd']) {
     assert.ok(pkg.build.deb.depends.includes(dependency), `missing deb dependency: ${dependency}`);
   }
   assert.equal(pkg.build.deb.afterInstall, 'build/after-install.sh');
@@ -1056,7 +1059,8 @@ test('packaging configuration, build ordering and hooks match the application in
   assert.match(install, /SYSAK_DIR="\$APP_DIR\/resources\/sysak"/);
   assert.match(install, /ROOT_HELPER="\$APP_DIR\/resources\/sysak-root-runner\.py"/);
   assert.match(install, /command -v python3/);
-  assert.match(install, /for file in "\$ROOT_HELPER" "\$UNIT_SOURCE" "\$SYSAK_DIR\/sysak"/);
+  assert.match(install, /for file in "\$ROOT_HELPER" "\$GX_HELPER" "\$UNIT_SOURCE" "\$SYSAK_DIR\/sysak"/);
+  assert.match(install, /python3 -I -B "\$GX_HELPER"/);
   assert.match(install, /chmod 644 "\$UNIT_SOURCE"/);
   assert.match(install, /require_file "\$file"/);
   assert.match(install, /chmod 755 "\$ROOT_HELPER"/);
@@ -1082,7 +1086,7 @@ test('packaging configuration, build ordering and hooks match the application in
     assert.equal(hook.split('\n').filter(line => /\brm\b/.test(line)).length, hook === install ? 0 : 2);
     const ownership = hook.split('\n').map(line => line.trim()).filter(line => /^chown\b/.test(line));
     assert.deepEqual(ownership, hook === install ? [
-      'chown root:root "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR" "$ROOT_HELPER" "$UNIT_SOURCE"',
+      'chown root:root "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR" "$ROOT_HELPER" "$GX_HELPER" "$UNIT_SOURCE"',
       'chown root:root "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules" "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"',
       'chown root:root "$TOOLS_DIR/$module.py"',
       'chown root:root "$APP_DIR/chrome-sandbox"',
@@ -1537,12 +1541,14 @@ function installResourcePreflight(f) {
   const appDir = path.join(f.temporary, 'installed-app');
   const bundle = path.join(appDir, 'resources/sysak');
   const helper = path.join(appDir, 'resources/sysak-root-runner.py');
+  const gxHelper = path.join(appDir, 'resources/gx-runtime.py');
   const unit = path.join(appDir, 'resources/sysom-idc.service');
   const log = path.join(f.temporary, 'preflight-chown.argv');
   fs.mkdirSync(path.dirname(bundle), { recursive: true });
   fs.cpSync(f.bundle, bundle, { recursive: true });
   // Neither fixture contains executable service/collector code.
   write(helper, '# inert helper fixture\n');
+  write(gxHelper, '# inert GX helper fixture\n');
   write(unit, '# inert unit fixture\n');
   for (const relative of Object.keys(modeSnapshot(appDir))) {
     const file = path.join(appDir, relative);
@@ -1588,7 +1594,7 @@ chmod() {
 }
 `;
   return {
-    appDir, bundle, helper, unit,
+    appDir, bundle, helper, gxHelper, unit,
     chownCalls: () => !fs.existsSync(log) ? [] : fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => {
       const args = line.split('\0');
       assert.equal(args.pop(), '');
@@ -1614,6 +1620,7 @@ test('installer preflight covers all private components and restores ordinary-us
   assert.deepEqual(snapshot(f.bundle), sourceBefore);
   assert.deepEqual(modeSnapshot(f.bundle), sourceModes);
   assert.equal(fs.statSync(installed.helper).mode & 0o7777, 0o755);
+  assert.equal(fs.statSync(installed.gxHelper).mode & 0o7777, 0o755);
   assert.equal(fs.statSync(installed.unit).mode & 0o7777, 0o644);
   assert.equal(fs.statSync(path.join(installed.appDir, 'resources')).mode & 0o7777, 0o755);
   assert.equal(fs.statSync(installed.appDir).mode & 0o7777, 0o755);
@@ -1656,17 +1663,17 @@ test('installer preflight records root:root argv for every fixed resource using 
   const calls = installed.chownCalls();
   assert.deepEqual(calls, [
     ['root:root', installed.appDir, path.join(installed.appDir, 'resources'), installed.bundle,
-      ...DIRECTORIES.map(relative => path.join(installed.bundle, relative)), installed.helper, installed.unit],
+      ...DIRECTORIES.map(relative => path.join(installed.bundle, relative)), installed.helper, installed.gxHelper, installed.unit],
     ['root:root', path.join(installed.bundle, 'sysak'), path.join(installed.bundle, 'manifest.json'),
       path.join(tools, '.sysak.rules'), ...COMMANDS.map(name => path.join(tools, name))],
     ...DIAGNOSTIC_MODULES.map(name => ['root:root', path.join(tools, `${name}.py`)]),
   ]);
   const targets = calls.flatMap(args => args.slice(1));
   assert.equal(calls.length, 20);
-  assert.equal(targets.length, 32);
+  assert.equal(targets.length, 33);
   assert.equal(new Set(targets).size, targets.length);
   assert.deepEqual([...targets].sort(), [
-    installed.appDir, path.join(installed.appDir, 'resources'), installed.helper, installed.unit,
+    installed.appDir, path.join(installed.appDir, 'resources'), installed.helper, installed.gxHelper, installed.unit,
     ...['', ...DIRECTORIES, ...EXPECTED_FILES, 'manifest.json']
       .map(relative => path.join(installed.bundle, relative)),
   ].sort());

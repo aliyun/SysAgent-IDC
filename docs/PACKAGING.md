@@ -1,6 +1,22 @@
 # 打包与安装
 
-当前交付为 **SysAgent 0.2.17 / 独立 AgentSight 0.16.0**，紧凑版 Agent 管家共用桌面和 IDE 页面。安装者优先阅读[根 README](../README.md)；本文保留历史 Demo 和发行验收记录，其中旧版本与测试数字不是本轮发布结论。
+当前交付为 **SysAgent 0.2.18 / GX 0.6.5-2 / 独立 AgentSight 0.16.0**。安装者优先阅读[根 README](../README.md)。
+
+## 0.2.18 开源发布件
+
+在项目根目录执行 `npm run build`，已有 Node 依赖时可执行 `npm run build -- --skip-install`。当前入口生成 `release/build-0.2.18/` 中的主 deb、官方未修改 GX deb、AgentSight runtime deb、VSIX、安装脚本、许可声明与校验清单；不生成 AppImage，不安装系统服务，也不上传发布件。
+
+主 deb 精确依赖 `gx (= 0.6.5-2)` 与 `sysom-agentsight-runtime (= 0.16.0)`，并声明 GX 需要的 glibc 2.27+、`zlib1g`、`libzstd1`。安装脚本按 GX、AgentSight runtime、主 SysAgent 顺序离线安装三个本地包；缺少系统依赖时由管理员补齐，不能强制跳过。GUI 启动不下载或提权。
+
+安装后 GX 辅助程序验证已配置版本和可信文件，为 `/usr/lib64` 注册动态库路径并运行 `ldconfig`；不会把 GX 自带的通用 ELF/DWARF 库加入全局搜索路径。真实 GPU 诊断仍取决于硬件和驱动，版本与依赖加载验证不等于硬件功能认证。
+
+本次交付另附 `sysagent-source-0.2.18.tar.gz` 源码快照（含公开 vendor 输入，排除 Git 配置、凭据、依赖缓存和旧发布输出）及 `release/SysAgent-0.2.18-linux-x64-offline.tar.gz` 发布归档。归档步骤不属于上述标准构建入口。
+
+解压发布归档后，进入 `build-0.2.18/`，执行 `sha256sum --check SHA256SUMS`、`sh ./install-debs.sh`，再以普通用户执行 `sysagent-idc`。
+
+## 0.2.17 及早期历史记录
+
+以下配置、产物路径与测试数字保留为历史记录，不作为 0.2.18 的当前安装入口或验收结论；旧版本输出可能已清理。
 
 ## 配置与源码
 

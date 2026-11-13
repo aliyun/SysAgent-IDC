@@ -7,18 +7,24 @@ are entitled to license. It does not replace third-party copyrights or terms.
 Fonts and dependency code retain their own licenses. Dependency versions and
 license identifiers are recorded in the package-lock.json files; inspect the
 actual dependency distributions and preserve their notices when redistributing
-a build. This file covers React, React DOM, Lucide and the bundled Noto Sans SC
-fonts, not every possible build-tool or native dependency.
+a build. This file covers React, React DOM, Lucide, the bundled Noto Sans SC
+fonts and the native components discussed below, not every possible build-tool
+or native dependency. Current release: SysAgent 0.2.18; AgentSight 0.16.0
+(unchanged).
 
 The source export excludes reference demo HTML, extracted reference bundles,
-archives, installed node_modules, validation data and the AgentSight build
-cache. Generated release packages are kept in Git-ignored release directories.
+unrelated archives, installed node_modules, validation data and the AgentSight
+build cache. The official GX DEB described below is an included build input. Generated release packages are kept in Git-ignored release directories.
 
-Prebuilt Linux x64 SysAK and AgentSight inputs are included under vendor/ with
-the maintainer's authorization for binary redistribution. Build scripts stage
-and validate these inputs; they do not compile SysAK or AgentSight from source.
-That authorization does not replace upstream copyrights, licenses or notices,
-and the project MIT license does not relicense those native components.
+Prebuilt Linux x64 SysAK and AgentSight inputs and an official unmodified GX
+0.6.5-2 DEB are included under vendor/ for redistribution. There are 30 vendor
+input files: 25 SysAK, 3 AgentSight and 2 GX (the DEB and its manifest).
+Build scripts stage and validate prebuilt inputs; they compile SysAgent code,
+not SysAK, AgentSight, GX or the complete upstream coolbpf source tree.
+The maintainer's binary redistribution authorization, including the user's
+explicit authorization for public GX redistribution, does not replace upstream
+copyrights, licenses or notices and is not a new upstream license grant.
+The project MIT license does not relicense those native components.
 
 Retained UI, data and styles include material ported from a reference demo.
 The permission record for that reference and its derivatives has not been
@@ -41,6 +47,42 @@ The inspected AppImage also bundles desktop libraries without a complete
 per-library license inventory. Establish their terms and satisfy applicable
 notice and source obligations, including LGPL requirements where applicable.
 Native binaries retain local build-path references that require review.
+
+GX 0.6.5-2 and scoped coolbpf changes
+------------------------------------
+Redistributed file: vendor/gx/linux-x64/gx_0.6.5-2_amd64.deb
+SHA-256: a471bf61863c61744b102ba19a8620feea68d9aeaab8591c9d056f3cbe5b1902
+This is the official unchanged upstream DEB from the SysAK AI build input.
+Inspected DEB metadata identifies package gx, version 0.6.5-2, architecture
+amd64 and maintainer alibaba-cloud. The DEB is verified and copied unchanged
+into the release; signed retrieval URLs and parameters are not distributed.
+
+The inspected GX RPM metadata lists the license strings literally as
+"LBPLv2+" and "MIT". Do not silently normalize "LBPLv2+" or treat this metadata
+as proof that the whole DEB is MIT-licensed. The inspected DEB lacks a complete
+copyright/license file. That absence does not establish a proprietary license,
+and neither SysAgent's MIT license nor the user's redistribution authorization
+relicenses GX or upstream source code. Preserve upstream copyrights and terms;
+confirm applicable notices and any corresponding-source obligations from the
+actual upstream licenses. Unchanged redistribution does not remove them.
+
+scripts/coolbpf-gx-0.6.5-2.patch contains scoped upstream coolbpf changes for
+GX version/configured-state checks and verified package caching and hashes.
+It is credential-free and contains no signed URLs. It does not modify the
+official GX DEB. The full upstream source tree is not vendored; this patch is
+not a complete corresponding-source delivery. Upstream source files retain
+their own licenses, not a blanket SysAgent MIT relicense. The root build uses
+prebuilt inputs rather than applying this patch for a complete upstream rebuild.
+
+The main SysAgent DEB exactly depends on gx (= 0.6.5-2) and
+sysom-agentsight-runtime (= 0.16.0). The offline installer installs three local
+DEBs: GX first, then AgentSight runtime, then SysAgent. The installation-only
+root helper checks the configured GX version and required GX files, creates
+/etc/ld.so.conf.d/sysagent-gx.conf containing /usr/lib64 followed by a newline,
+and runs ldconfig. /usr/share/gx/lib is the GX executable's RPATH, not a global
+loader path. GUI startup never downloads or elevates. Successful package and
+loader setup does not prove hardware/driver-dependent GPU tracing; that
+capability has not been established here.
 
 React and React DOM
 -------------------

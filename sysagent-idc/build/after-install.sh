@@ -5,6 +5,7 @@ APP_DIR='/opt/SysAgent管家'
 SYSAK_DIR="$APP_DIR/resources/sysak"
 TOOLS_DIR="$SYSAK_DIR/.sysak_components/tools"
 ROOT_HELPER="$APP_DIR/resources/sysak-root-runner.py"
+GX_HELPER="$APP_DIR/resources/gx-runtime.py"
 UNIT_SOURCE="$APP_DIR/resources/sysom-idc.service"
 
 # Only the package installer may deploy the application's root IDC service.
@@ -68,7 +69,7 @@ require_safe_chain "${APP_DIR%/*}"
 for directory in "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR"; do
     require_safe_chain "$directory"
 done
-for file in "$ROOT_HELPER" "$UNIT_SOURCE" "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" \
+for file in "$ROOT_HELPER" "$GX_HELPER" "$UNIT_SOURCE" "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" \
     "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai" "$TOOLS_DIR/.sysak.rules"; do
     require_file "$file"
 done
@@ -169,13 +170,15 @@ for module in resource_anomaly_idc fdleak_metrics plugin_abnormalPackages plugin
     chmod 755 "$TOOLS_DIR/$module.py"
 done
 chmod 644 "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules"
-chmod 755 "$ROOT_HELPER"
+chmod 755 "$ROOT_HELPER" "$GX_HELPER"
 chmod 644 "$UNIT_SOURCE"
-chown root:root "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR" "$ROOT_HELPER" "$UNIT_SOURCE"
+chown root:root "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR" "$ROOT_HELPER" "$GX_HELPER" "$UNIT_SOURCE"
 chown root:root "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules" "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"
 for module in resource_anomaly_idc fdleak_metrics plugin_abnormalPackages plugin_anonTaskTop plugin_cache plugin_memcgLeak plugin_memfrag plugin_memgraph plugin_meminfo plugin_memleak plugin_podDetect plugin_system plugin_taskProc plugin_vmRssTaskTop plugin_skcheck plugin_appmem mem_utils plugin_thpCollect; do
     chown root:root "$TOOLS_DIR/$module.py"
 done
+
+python3 -I -B "$GX_HELPER"
 
 update-alternatives --install '/usr/bin/sysagent-idc' 'sysagent-idc' "$APP_DIR/sysagent-idc" 100
 
