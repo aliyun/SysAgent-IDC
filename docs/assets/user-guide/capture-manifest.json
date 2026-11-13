@@ -1,0 +1,273 @@
+{
+  "source_version": "0.2.15",
+  "captured_at": "2026-11-12T12:48:52.452Z",
+  "runtime": "Current React source in isolated browser; no Electron/IDE host, no collector plugin",
+  "evidence": "Artificial documentation fixtures and built-in Demo; not live host data",
+  "real_operations": false,
+  "errors": [],
+  "foreign_requests": [],
+  "captures": [
+    {
+      "file": "01-home.png",
+      "headings": [
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率"
+      ]
+    },
+    {
+      "file": "02-inspection-settings.png",
+      "headings": [
+        "巡检配置",
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率"
+      ]
+    },
+    {
+      "file": "02b-inspection-interval.png",
+      "headings": [
+        "设置巡检周期",
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率"
+      ]
+    },
+    {
+      "file": "03-cpu-ranking.png",
+      "headings": [
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率",
+        "CPU 利用率 · 进程资源排行 Top 10"
+      ]
+    },
+    {
+      "file": "04-cleanup-confirm.png",
+      "headings": [
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率",
+        "CPU 利用率 · 进程资源排行 Top 10",
+        "确认结束以下进程？"
+      ]
+    },
+    {
+      "file": "05-inspections.png",
+      "headings": [
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率",
+        "体检项目",
+        "重要检查",
+        "一期诊断",
+        "二期规划"
+      ]
+    },
+    {
+      "file": "06-health-report.png",
+      "headings": [
+        "当前采集与诊断展示中有指标需要关注。",
+        "系统资源",
+        "CPU 利用率整机",
+        "能耗功率测量",
+        "系统内存",
+        "系统磁盘",
+        "GPU 利用率",
+        "本机体检报告",
+        "本地 AI 工作站",
+        "操作记录 0 条"
+      ]
+    },
+    {
+      "file": "07-gpu-overview.png",
+      "headings": [
+        "GPU 诊断",
+        "GPU 智能诊断",
+        "本机 GPU 资源",
+        "GPU 0 · NVIDIA 文档样例 GPU",
+        "从客户问题进入诊断"
+      ]
+    },
+    {
+      "file": "08-gpu-diagnosis.png",
+      "headings": [
+        "GPU 诊断",
+        "GPU 智能诊断",
+        "GPU 诊断",
+        "发现异常",
+        "真实检查项与证据"
+      ]
+    },
+    {
+      "file": "09-gpu-jobs.png",
+      "headings": [
+        "GPU 诊断",
+        "GPU 智能诊断",
+        "作业级深度剖析",
+        "作业分析受限 / 不可用，不代表正常",
+        "GPU 0 · NVIDIA 文档样例 GPU",
+        "已采集作业进程",
+        "PID 41001 · name：N/A · 不可用",
+        "进程实际 HANG / NCCL / Xid 及其他证据",
+        "本机 NVML / GX 检查及 HANG / NCCL / Xid 证据"
+      ]
+    },
+    {
+      "file": "09b-gpu-job-detail.png",
+      "headings": [
+        "GPU 诊断",
+        "GPU 智能诊断",
+        "作业级深度剖析",
+        "作业分析受限 / 不可用，不代表正常",
+        "GPU 0 · NVIDIA 文档样例 GPU",
+        "已采集作业进程",
+        "PID 41001 · name：N/A · 不可用",
+        "进程实际 HANG / NCCL / Xid 及其他证据",
+        "本机 NVML / GX 检查及 HANG / NCCL / Xid 证据"
+      ]
+    },
+    {
+      "file": "10-gpu-events-demo.png",
+      "headings": [
+        "GPU 诊断",
+        "GPU 智能诊断",
+        "显存访问越界",
+        "等待分析异常事件"
+      ]
+    },
+    {
+      "file": "11-agent-overview.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "调用延迟对比",
+        "待关注中断",
+        "进程探活"
+      ]
+    },
+    {
+      "file": "11b-agent-coverage.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "调用延迟对比",
+        "待关注中断",
+        "进程探活"
+      ]
+    },
+    {
+      "file": "11c-agent-processes.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "调用延迟对比",
+        "待关注中断",
+        "进程探活"
+      ]
+    },
+    {
+      "file": "12-agent-sessions.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "会话列表"
+      ]
+    },
+    {
+      "file": "13-agent-interruptions.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "中断事件"
+      ]
+    },
+    {
+      "file": "14-agent-evidence.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "中断事件",
+        "模型调用错误 · 高危"
+      ]
+    },
+    {
+      "file": "15-agent-latency.png",
+      "headings": [
+        "Agent 管家",
+        "本机 Agent 诊断",
+        "发现与建议",
+        "调用延迟对比",
+        "LLM 调用延迟"
+      ]
+    },
+    {
+      "file": "16-devices-demo.png",
+      "headings": [
+        "设备管理",
+        "设备列表"
+      ]
+    },
+    {
+      "file": "17-ops-demo.png",
+      "headings": [
+        "研发运维概念验证",
+        "应用部署",
+        "workspace-web",
+        "开发到运维的闭环",
+        "编写代码待集成",
+        "部署上线模拟流程",
+        "健康观测需适配",
+        "诊断反馈可复用底座",
+        "我的设备"
+      ]
+    },
+    {
+      "file": "18-logs-demo.png",
+      "headings": [
+        "日志分析概念验证",
+        "本地日志聚合任务",
+        "应用日志 · 异常模式分析",
+        "本地优先，按需外发",
+        "日志浏览器",
+        "从日志中找到值得排查的问题"
+      ]
+    },
+    {
+      "file": "19-collector-unavailable.png",
+      "headings": [
+        "整体数据暂不可用"
+      ]
+    }
+  ]
+}

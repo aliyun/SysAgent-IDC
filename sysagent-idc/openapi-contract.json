@@ -1,0 +1,413 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "SysAgent Guard evidence OpenAPI (mock)",
+    "version": "1.2.0",
+    "description": "Local sysak collection -> authenticated loopback HTTP -> parsed real resource and diagnostic HealthState. Independent AgentSight evidence -> POST /openapi/v1/agent-diagnostics -> shared AgentDiagnostic using deterministic local rules, without sysak device snapshots or revisions. AgentSight is not sysak evidence and never changes its snapshot state. mode: mock identifies local deployment, not simulated measurements; state.mode is collected and task.simulated is false. Read-only snapshot, reset, inspect and independent agent-diagnose are supported; cleanup, optimization and simulated mutations return 409 read_only. Missing measurements are null with availability metadata, never demo values. Successful Agent parsing does not assert health or confirm a fault root cause. All routes require Bearer authentication, bind only to 127.0.0.1, reject Origin headers, and emit JSON with Cache-Control: no-store. No raw snapshots or tokens are logged or persisted. Tasks complete synchronously (HTTP 200), sharing a maximum 100 retained results/tasks across evidence routes. The server never invokes collectors, LLMs, external services, shell commands, resolve, restart or process actions."
+  },
+  "servers": [{ "url": "http://127.0.0.1:{port}", "variables": { "port": { "default": "8787", "description": "Actual ephemeral or configured loopback port returned by startMockOpenApi; 8787 is illustrative only." } } }],
+  "security": [{ "BearerAuth": [] }],
+  "paths": {
+    "/openapi/v1/collections": {
+      "post": {
+        "operationId": "submitCollection",
+        "summary": "Parse a local sysak snapshot and return real resource state",
+        "description": "Uncompressed UTF-8 JSON: request maximum 10 MiB, original raw_snapshot value including internal whitespace maximum 8 MiB. Raw request_id exactly matches outer request_id. Outer persistent device UUID supplies receipt.device.id; collection.finished_at supplies collected_at and sampledAt. Raw evidence is not rewritten. inspect maps to inspection; snapshot/reset map to resources. Collector error returns 503 without commit; partial is accepted with explicit unavailable measurements. Parse CPU counter deltas, MemTotal-MemAvailable, root statvfs, GPU resource reports (tool idc, mode idc, read_only true) from IDC on-demand fixed nvidia-smi CSV queries, package-only RAPL watts and bounded process CPU/RSS/I/O rankings. Agent/Session attribution is not implemented. Inspection parses fixed resource_anomaly --idc root/FD and memgraph --idc --jsonstdout evidence; other diagnoses remain unchecked. Successful fresh requests increment revision (initial snapshot/reset: 1); replay preserves its original revision and does not replace latest snapshot. Resources refresh preserves independent inspection results; reset clears inspection history without reducing revision. hasGpu is inferred from evidence, not the optional UI hint. snapshot/reset revision optional; inspect and legacy write requests require positive matching revision checked before raw interpretation. Legacy write operations return 409 read_only, never commit. Capacity 32 devices, retryable 503 on overflow; last 100 successful requests/tasks retained FIFO. Case-insensitive UUID replay lookup requires exactly identical body bytes, otherwise 409; replay does not refresh FIFO or latest snapshot. Evicted tasks return 404. Raw data is neither returned nor retained.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionRequest" } } } },
+        "responses": {
+          "200": { "description": "Completed read-only parsing task", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/openapi/v1/agent-diagnostics": {
+      "post": {
+        "operationId": "submitAgentDiagnostics",
+        "summary": "Interpret independent AgentSight evidence using local read-only rules",
+        "description": "AgentSight is not a sysak collector. No existing device snapshot or revision is required; this route never reads or changes sysak snapshot state or consumes device capacity. Uncompressed UTF-8 JSON: 10 MiB request, 8 MiB original raw_snapshot including whitespace. request_id shares the last-100 FIFO result/task cache with collections; identical bytes on the same route replay, different bytes or route return 409. Successful submission means parsing completed, NOT Agent health. Missing sources are unavailable, malformed individual sources fail closed as invalid without interpreting any of their rows. Oversized or upstream truncated lists are bounded and explicitly truncated, not complete. process/session/interruption/latency limits: 256/500/200/1; latency is a single object, not an array. Sessions and Token totals describe only the complete collected session list (usually upstream 24h, auxiliary calls excluded by default), never all window calls; truncated session totals are null. Whole-window unresolved/critical/high totals come only from valid complete interruptionCounts, never the 200-row unresolved list. Null metrics remain null. Nanosecond numeric precision is used only for timestamp display, not IDs. Zero or older-than-2-minute scan yields unknown probe conclusions; this threshold measures freshness only. healthy means any HTTP status response, no_port may be a normal CLI, offline without has_crash is not a crash. hung/unhealthy, offline with has_crash and unresolved events produce observations and manual suggestions, never confirmed root causes. No data yields unknown. Five valid complete sources yield status ok, some usable sources partial, none unavailable; coverage gaps without definite abnormalities remain unknown. No LLM, external calls, resolve, restart or process operations. Raw evidence is neither returned nor retained.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentDiagnosticRequest" } } } },
+        "responses": {
+          "200": { "description": "Completed interpretation, including partial/unavailable evidence; not a health assertion", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentDiagnosticResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "413": { "$ref": "#/components/responses/TooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" }, "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/openapi/v1/devices/{device_id}/snapshot": {
+      "get": {
+        "operationId": "getDeviceSnapshot",
+        "summary": "Get the last successful parsed resource state",
+        "parameters": [{ "name": "device_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/UUID" } }],
+        "responses": {
+          "200": { "description": "Last committed response; a replay does not replace it", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/openapi/v1/tasks/{task_id}": {
+      "get": {
+        "operationId": "getTask",
+        "summary": "Get a retained synchronous task; no raw snapshot is retained",
+        "parameters": [{ "name": "task_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/UUID" } }],
+        "responses": {
+          "200": { "description": "Completed task metadata", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/openapi/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Declare supported read-only collection operations and profiles",
+        "responses": {
+          "200": { "description": "Mock capabilities, not remote command permissions", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Capabilities" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/openapi/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenApiContract",
+        "summary": "Get this authenticated OpenAPI 3.1 document",
+        "responses": {
+          "200": { "description": "OpenAPI document, without an envelope", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "type": "object", "required": ["openapi", "info", "paths", "components", "security"], "properties": { "openapi": { "const": "3.1.0" } }, "additionalProperties": true } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": { "BearerAuth": { "type": "http", "scheme": "bearer", "description": "Mandatory opaque local token, compared using timingSafeEqual on SHA-256 digests. Not a query parameter; never logged." } },
+    "headers": { "NoStore": { "description": "All success and error responses disable caching", "schema": { "type": "string", "const": "no-store" } } },
+    "responses": {
+      "BadRequest": { "description": "Malformed UTF-8/JSON, schema, UUID, profile, parameters, IDs or protected selection", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "Unauthorized": { "description": "Missing or invalid Bearer authentication (checked on every route before other validation)", "headers": { "WWW-Authenticate": { "schema": { "type": "string", "const": "Bearer" } }, "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "Forbidden": { "description": "Origin headers are forbidden; no CORS headers are emitted", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "NotFound": { "description": "Unknown route, uninitialized device or evicted/unknown task", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "MethodNotAllowed": { "description": "Wrong method; Allow header identifies the supported method", "headers": { "Allow": { "schema": { "type": "string", "enum": ["GET", "POST"] } }, "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "Conflict": { "description": "revision_conflict, idempotency_conflict or read_only; no state committed", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "TooLarge": { "description": "Request exceeds 10 MiB or original raw_snapshot JSON value exceeds 8 MiB", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "UnsupportedMediaType": { "description": "Only uncompressed application/json is accepted", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+      "Unavailable": { "description": "collection_failed, device_capacity or service_unavailable; retryable true, no successful state commit", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+    },
+    "schemas": {
+      "UUID": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$" },
+      "Version": { "type": "string", "const": "1.0" },
+      "ShortString": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "Operation": { "type": "string", "enum": ["snapshot", "reset", "inspect", "cleanup", "optimize", "sessions-cleanup", "alert-sample"] },
+      "Profile": { "type": "string", "enum": ["resources", "inspection"] },
+      "ResourceId": { "type": "string", "enum": ["cpu", "energy", "memory", "disk", "gpu"] },
+      "Ids": { "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": { "$ref": "#/components/schemas/ShortString" } },
+      "Parameters": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "revision": { "type": "integer", "minimum": 1 }, "hasGpu": { "type": "boolean", "description": "Optional UI hint accepted but not used to override actual GPU evidence." },
+          "resource": { "$ref": "#/components/schemas/ResourceId" }, "ids": { "$ref": "#/components/schemas/Ids" },
+          "agentId": { "$ref": "#/components/schemas/ShortString" },
+          "sessionIds": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "$ref": "#/components/schemas/ShortString" } },
+          "target": { "type": "string", "enum": ["cpu", "energy", "memory", "gpu", "root", "fd"] }, "usage": { "type": "number", "enum": [80, 96] }
+        }
+      },
+      "CollectionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["schema_version", "request_id", "device_id", "operation", "raw_snapshot", "parameters"],
+        "x-max-request-bytes": 10485760,
+        "properties": {
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "device_id": { "$ref": "#/components/schemas/UUID", "description": "App-persistent random UUID, independent of raw device metadata; supplies receipt.device.id." },
+          "operation": { "$ref": "#/components/schemas/Operation" }, "raw_snapshot": { "$ref": "#/components/schemas/RawSnapshot" }, "parameters": { "$ref": "#/components/schemas/Parameters" }
+        },
+        "allOf": [
+          { "if": { "properties": { "operation": { "enum": ["snapshot", "reset", "inspect"] } } }, "then": { "properties": { "parameters": { "propertyNames": { "enum": ["revision", "hasGpu"] } } } } },
+          { "if": { "properties": { "operation": { "enum": ["inspect", "cleanup", "optimize", "sessions-cleanup", "alert-sample"] } } }, "then": { "properties": { "parameters": { "required": ["revision"] } } } },
+          { "if": { "properties": { "operation": { "const": "cleanup" } } }, "then": { "properties": { "parameters": { "required": ["resource", "ids"], "propertyNames": { "enum": ["revision", "hasGpu", "resource", "ids"] } } } } },
+          { "if": { "properties": { "operation": { "const": "optimize" } } }, "then": { "properties": { "parameters": { "required": ["ids"], "propertyNames": { "enum": ["revision", "hasGpu", "ids"] } } } } },
+          { "if": { "properties": { "operation": { "const": "sessions-cleanup" } } }, "then": { "properties": { "parameters": { "required": ["resource", "agentId", "sessionIds"], "propertyNames": { "enum": ["revision", "hasGpu", "resource", "agentId", "sessionIds"] } } } } },
+          { "if": { "properties": { "operation": { "const": "alert-sample" } } }, "then": { "properties": { "parameters": { "required": ["target", "usage"], "propertyNames": { "enum": ["revision", "hasGpu", "target", "usage"] } } } } },
+          { "if": { "properties": { "operation": { "const": "inspect" } } }, "then": { "properties": { "raw_snapshot": { "properties": { "collection": { "properties": { "profile": { "const": "inspection" } } } } } } } },
+          { "if": { "properties": { "operation": { "enum": ["snapshot", "reset", "cleanup", "optimize", "sessions-cleanup", "alert-sample"] } } }, "then": { "properties": { "raw_snapshot": { "properties": { "collection": { "properties": { "profile": { "const": "resources" } } } } } } } }
+        ]
+      },
+      "Permissions": {
+        "type": "object", "additionalProperties": false, "required": ["status"],
+        "description": "Collector-reported permissions, not server privileges. Propagated only as receipt metadata; partial/denied permissions do not turn partial collection into full success.",
+        "properties": { "status": { "type": "string", "enum": ["granted", "partial", "denied"] }, "elevated": { "type": "boolean" }, "denied": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/components/schemas/ShortString" } } }
+      },
+      "Collector": {
+        "type": "object", "required": ["name"], "additionalProperties": true,
+        "properties": { "name": { "type": "string", "const": "sysak" }, "version": { "$ref": "#/components/schemas/ShortString" }, "permissions": { "$ref": "#/components/schemas/Permissions" } },
+        "description": "Metadata from the local allowlisted sysak collector. Extra collector metadata is accepted but not echoed. This mock does not authenticate hardware provenance and never invokes a collector or shell."
+      },
+      "Device": { "type": "object", "additionalProperties": true, "description": "Opaque local sysAK metadata: platform, machine, hostname and scope: local. No id is emitted or required; receipt.device.id comes from outer device_id. Device metadata is not echoed." },
+      "RawSnapshot": {
+        "type": "object", "additionalProperties": true, "x-max-json-bytes": 8388608,
+        "required": ["schema_version", "request_id", "collection", "collector", "device", "resources", "configuration", "diagnostics", "capabilities"],
+        "description": "Structured sysAK idc.py envelope, preserved unchanged. collection.finished_at is the completion timestamp. All three sections are objects even when unavailable. Known resource and safe diagnostic evidence is parsed; unknown fields are not echoed. No arbitrary command API. Limits apply to original UTF-8 JSON bytes. Invalid or missing individual measurements become unavailable, not successful zero samples.",
+        "properties": {
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" },
+          "collection": {
+            "type": "object", "required": ["profile", "status", "finished_at"], "additionalProperties": true,
+            "description": "Collector also emits started_at, duration_ms and, for resources/inspection, sample_ms; these remain opaque metadata.",
+            "properties": {
+              "profile": { "$ref": "#/components/schemas/Profile" }, "status": { "type": "string", "enum": ["ok", "partial", "error"] },
+              "finished_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$", "description": "Valid calendar date/time, timezone required, seconds 00-59 (no leap-second encoding). Supplies receipt.collected_at." }
+            }
+          },
+          "collector": { "$ref": "#/components/schemas/Collector" }, "device": { "$ref": "#/components/schemas/Device" },
+          "resources": { "type": "object", "additionalProperties": true }, "configuration": { "type": "object", "additionalProperties": true }, "diagnostics": { "type": "object", "additionalProperties": true },
+          "capabilities": { "type": "object", "required": ["read_only"], "additionalProperties": true, "properties": { "read_only": { "type": "boolean", "const": true } }, "description": "Collector read-only declaration; supported_profiles and unsupported_actions remain opaque metadata, not server permissions." }
+        }
+      },
+      "Receipt": {
+        "type": "object", "additionalProperties": false, "required": ["raw_bytes", "profile", "collected_at", "collection_status", "collector", "device"],
+        "properties": {
+          "raw_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 }, "profile": { "$ref": "#/components/schemas/Profile" },
+          "collected_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$", "description": "Copied from raw_snapshot.collection.finished_at." }, "collection_status": { "type": "string", "enum": ["ok", "partial"] },
+          "collector": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "const": "sysak", "type": "string" }, "version": { "$ref": "#/components/schemas/ShortString" }, "permissions": { "$ref": "#/components/schemas/Permissions" } } },
+          "device": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "$ref": "#/components/schemas/UUID", "description": "Copied from the outer app-persistent device_id, not raw device metadata." } } }
+        }
+      },
+      "Task": {
+        "type": "object", "additionalProperties": false, "required": ["id", "status", "operation", "simulated", "read_only"],
+        "description": "Synchronous read-only parsing task. simulated is false; missing diagnostics remain unchecked rather than fabricated success.",
+        "properties": { "id": { "$ref": "#/components/schemas/UUID" }, "status": { "type": "string", "const": "completed" }, "operation": { "type": "string", "enum": ["snapshot", "reset", "inspect", "cleanup", "optimize", "sessions-cleanup", "alert-sample", "agent-diagnose"] }, "simulated": { "type": "boolean", "const": false }, "read_only": { "type": "boolean", "const": true } }
+      },
+      "TaskResponse": { "type": "object", "additionalProperties": false, "required": ["schema_version", "task"], "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "task": { "$ref": "#/components/schemas/Task" } } },
+      "CollectionResponse": {
+        "type": "object", "additionalProperties": false, "required": ["schema_version", "request_id", "task_id", "mode", "read_only", "state", "receipt", "task"],
+        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "task_id": { "$ref": "#/components/schemas/UUID" }, "mode": { "type": "string", "const": "mock" }, "read_only": { "type": "boolean", "const": true }, "state": { "$ref": "#/components/schemas/HealthState" }, "receipt": { "$ref": "#/components/schemas/Receipt" }, "task": { "$ref": "#/components/schemas/Task" } }
+      },
+      "ErrorResponse": {
+        "type": "object", "additionalProperties": false, "required": ["schema_version", "error"],
+        "properties": {
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID", "description": "Present only after successfully parsing a valid envelope request_id." },
+          "error": { "type": "object", "additionalProperties": false, "required": ["code", "message", "retryable"], "properties": { "code": { "type": "string", "enum": ["invalid_request", "unauthorized", "origin_not_allowed", "not_found", "method_not_allowed", "revision_conflict", "idempotency_conflict", "request_too_large", "raw_snapshot_too_large", "unsupported_media_type", "collection_failed", "device_capacity", "service_unavailable", "read_only"] }, "message": { "type": "string" }, "retryable": { "type": "boolean", "description": "True only for 503. 409 requires state refresh or a new ID, not blind retry." } } }
+        }
+      },
+      "Capabilities": {
+        "type": "object", "additionalProperties": false, "required": ["schema_version", "api_version", "mode", "read_only", "collection", "demo_operations", "collection_operations", "destructive_actions_enabled", "agent_diagnostics", "tasks", "limits"],
+        "properties": {
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "api_version": { "type": "string", "const": "v1" }, "mode": { "type": "string", "const": "mock" }, "read_only": { "type": "boolean", "const": true },
+          "collection": { "type": "object", "additionalProperties": false, "required": ["collector", "profiles", "arbitrary_commands"], "properties": { "collector": { "type": "string", "const": "sysak" }, "profiles": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Profile" } }, "arbitrary_commands": { "type": "boolean", "const": false } } },
+          "agent_diagnostics": { "$ref": "#/components/schemas/AgentDiagnosticCapabilities" },
+          "demo_operations": { "type": "array", "const": [] }, "collection_operations": { "type": "array", "const": ["snapshot", "reset", "inspect"] }, "destructive_actions_enabled": { "type": "boolean", "const": false },
+          "tasks": { "type": "object", "additionalProperties": false, "required": ["execution", "statuses", "asynchronous_supported"], "properties": { "execution": { "type": "string", "const": "synchronous" }, "statuses": { "type": "array", "const": ["completed"] }, "asynchronous_supported": { "type": "boolean", "const": false } } },
+          "limits": { "type": "object", "additionalProperties": false, "required": ["request_bytes", "raw_snapshot_bytes", "devices", "retained_results"], "properties": { "request_bytes": { "type": "integer", "const": 10485760 }, "raw_snapshot_bytes": { "type": "integer", "const": 8388608 }, "devices": { "type": "integer", "const": 32 }, "retained_results": { "type": "integer", "const": 100 } } }
+        }
+      },
+      "AgentDiagnosticCapabilities": {
+        "type": "object", "additionalProperties": false,
+        "required": ["route", "method", "source", "operation", "independent_evidence", "requires_sysak_snapshot", "requires_revision", "mutates_sysak_snapshot", "analyzer", "external_calls", "source_limits"],
+        "properties": {
+          "route": { "const": "/openapi/v1/agent-diagnostics" }, "method": { "const": "POST" }, "source": { "const": "agentsight" }, "operation": { "const": "agent-diagnose" },
+          "independent_evidence": { "const": true }, "requires_sysak_snapshot": { "const": false }, "requires_revision": { "const": false }, "mutates_sysak_snapshot": { "const": false },
+          "analyzer": { "const": "local-rules" }, "external_calls": { "const": false },
+          "source_limits": { "type": "object", "additionalProperties": false, "required": ["processes", "sessions", "interruptions", "interruptionCounts", "latency"], "properties": { "processes": { "const": 256 }, "sessions": { "const": 500 }, "interruptions": { "const": 200 }, "interruptionCounts": { "const": 1 }, "latency": { "const": 256 } } }
+        }
+      },
+      "AgentDiagnosticRequest": {
+        "type": "object", "additionalProperties": false, "x-max-request-bytes": 10485760,
+        "required": ["schema_version", "request_id", "device_id", "raw_snapshot"],
+        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "device_id": { "$ref": "#/components/schemas/UUID" }, "raw_snapshot": { "$ref": "#/components/schemas/AgentRawSnapshot" } }
+      },
+      "AgentDateTime": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$" },
+      "AgentWindow": { "type": "object", "additionalProperties": false, "required": ["start", "end"], "description": "Valid calendar timestamps: start <= end <= sampled_at. Window is supplied by the collector, not inferred from row counts.", "properties": { "start": { "$ref": "#/components/schemas/AgentDateTime" }, "end": { "$ref": "#/components/schemas/AgentDateTime" } } },
+      "AgentRawSnapshot": {
+        "type": "object", "additionalProperties": false, "x-max-json-bytes": 8388608,
+        "required": ["schema_version", "source", "sampled_at", "window", "sources"],
+        "properties": {
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "source": { "const": "agentsight" }, "sampled_at": { "$ref": "#/components/schemas/AgentDateTime" }, "window": { "$ref": "#/components/schemas/AgentWindow" },
+          "sources": {
+            "type": "object", "additionalProperties": false, "description": "Sources may be missing or unavailable. Invalid individual source content is accepted only to report invalid coverage, not interpreted as evidence. No command lines, paths, user questions or interruption detail fields.",
+            "properties": {
+              "processes": { "$ref": "#/components/schemas/AgentRawSource", "x-valid-data-schema": "#/components/schemas/AgentRawProcesses" },
+              "sessions": { "$ref": "#/components/schemas/AgentRawSource", "x-valid-data-schema": "#/components/schemas/AgentRawSessions" },
+              "interruptions": { "$ref": "#/components/schemas/AgentRawSource", "x-valid-data-schema": "#/components/schemas/AgentRawInterruptions" },
+              "interruptionCounts": { "$ref": "#/components/schemas/AgentRawSource", "x-valid-data-schema": "#/components/schemas/AgentRawInterruptionCounts" },
+              "latency": { "$ref": "#/components/schemas/AgentRawSource", "x-valid-data-schema": "#/components/schemas/AgentRawLatency" }
+            }
+          }
+        }
+      },
+      "AgentRawSource": {
+        "type": "object", "additionalProperties": false, "required": ["status", "reason", "data"],
+        "description": "available/truncated data is validated against the per-source x-valid-data-schema; any invalid row invalidates the entire source. unavailable/invalid requires null data. Oversized lists are capped and marked truncated. These semantic failures return 200 with invalid coverage, not a health assertion.",
+        "properties": { "status": { "$ref": "#/components/schemas/AgentSourceStatus" }, "reason": { "type": "string", "maxLength": 512 }, "data": { "description": "JSON or null; never echoed. See per-source x-valid-data-schema for the strictly interpreted projection." } }
+      },
+      "AgentSourceStatus": { "type": "string", "enum": ["available", "unavailable", "invalid", "truncated"] },
+      "AgentProcessStatus": { "type": "string", "enum": ["healthy", "unhealthy", "hung", "unknown", "no_port", "offline"] },
+      "AgentSeverity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+      "AgentText": { "type": "string", "minLength": 1, "maxLength": 256 },
+      "AgentNullableText": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+      "AgentInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+      "AgentNullableInteger": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+      "AgentNullableNumber": { "type": ["number", "null"], "minimum": 0 },
+      "AgentEpochMs": { "type": "integer", "minimum": 0, "maximum": 8640000000000000, "description": "Milliseconds since epoch; process scan/check 0 means never scanned/checked and is displayed as null." },
+      "AgentEpochNs": { "type": "integer", "minimum": 0, "maximum": 8.64e21, "description": "Nanoseconds since epoch; number precision loss is permitted for display only, never identity or ID comparisons." },
+      "AgentNullableDateTime": { "type": ["string", "null"], "format": "date-time" },
+      "AgentPorts": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "type": "integer", "minimum": 0, "maximum": 65535 } },
+      "AgentRawProcess": {
+        "type": "object", "additionalProperties": false, "required": ["pid", "agent_name", "role", "status", "ports", "last_check_time", "latency_ms", "parent_pid", "has_crash"],
+        "properties": { "pid": { "$ref": "#/components/schemas/AgentInteger" }, "agent_name": { "$ref": "#/components/schemas/AgentText" }, "role": { "$ref": "#/components/schemas/AgentText" }, "status": { "$ref": "#/components/schemas/AgentProcessStatus" }, "ports": { "$ref": "#/components/schemas/AgentPorts" }, "last_check_time": { "$ref": "#/components/schemas/AgentEpochMs" }, "latency_ms": { "$ref": "#/components/schemas/AgentNullableInteger" }, "parent_pid": { "$ref": "#/components/schemas/AgentNullableInteger" }, "has_crash": { "type": "boolean" } }
+      },
+      "AgentRawProcesses": { "type": "object", "additionalProperties": false, "required": ["agents", "last_scan_time", "filtered_count"], "properties": { "agents": { "type": "array", "maxItems": 256, "items": { "$ref": "#/components/schemas/AgentRawProcess" } }, "last_scan_time": { "$ref": "#/components/schemas/AgentEpochMs" }, "filtered_count": { "$ref": "#/components/schemas/AgentInteger" } } },
+      "AgentRawSession": {
+        "type": "object", "additionalProperties": false, "required": ["session_id", "conversation_count", "first_seen_ns", "last_seen_ns", "total_input_tokens", "total_output_tokens", "agent_name", "model"],
+        "properties": { "session_id": { "$ref": "#/components/schemas/AgentText" }, "conversation_count": { "$ref": "#/components/schemas/AgentInteger" }, "first_seen_ns": { "$ref": "#/components/schemas/AgentEpochNs" }, "last_seen_ns": { "$ref": "#/components/schemas/AgentEpochNs" }, "total_input_tokens": { "$ref": "#/components/schemas/AgentInteger" }, "total_output_tokens": { "$ref": "#/components/schemas/AgentInteger" }, "agent_name": { "$ref": "#/components/schemas/AgentNullableText" }, "model": { "$ref": "#/components/schemas/AgentNullableText" } }
+      },
+      "AgentRawSessions": { "type": "array", "maxItems": 500, "items": { "$ref": "#/components/schemas/AgentRawSession" } },
+      "AgentRawInterruption": {
+        "type": "object", "additionalProperties": false, "required": ["interruption_id", "session_id", "call_id", "pid", "agent_name", "interruption_type", "severity", "occurred_at_ns", "resolved"],
+        "properties": { "interruption_id": { "$ref": "#/components/schemas/AgentText" }, "session_id": { "$ref": "#/components/schemas/AgentNullableText" }, "call_id": { "$ref": "#/components/schemas/AgentNullableText" }, "pid": { "$ref": "#/components/schemas/AgentNullableInteger" }, "agent_name": { "$ref": "#/components/schemas/AgentNullableText" }, "interruption_type": { "$ref": "#/components/schemas/AgentText" }, "severity": { "$ref": "#/components/schemas/AgentSeverity" }, "occurred_at_ns": { "$ref": "#/components/schemas/AgentEpochNs" }, "resolved": { "type": "boolean" } }
+      },
+      "AgentRawInterruptions": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/AgentRawInterruption" } },
+      "AgentRawInterruptionCounts": { "type": "object", "additionalProperties": false, "required": ["total", "by_severity"], "description": "Whole-window unresolved counts, including events beyond the list limit. Total must equal the sum of all four severities.", "properties": { "total": { "$ref": "#/components/schemas/AgentInteger" }, "by_severity": { "type": "object", "additionalProperties": false, "required": ["critical", "high", "medium", "low"], "properties": { "critical": { "$ref": "#/components/schemas/AgentInteger" }, "high": { "$ref": "#/components/schemas/AgentInteger" }, "medium": { "$ref": "#/components/schemas/AgentInteger" }, "low": { "$ref": "#/components/schemas/AgentInteger" } } } } },
+      "AgentQuantiles": { "type": ["object", "null"], "additionalProperties": false, "required": ["p50", "p95", "p99"], "description": "Finite nonnegative p50 <= p95 <= p99; null means no measurement.", "properties": { "p50": { "type": "number", "minimum": 0 }, "p95": { "type": "number", "minimum": 0 }, "p99": { "type": "number", "minimum": 0 } } },
+      "AgentRawLatency": {
+        "type": "array", "maxItems": 256, "items": { "$ref": "#/components/schemas/AgentRawLatencyRow" },
+        "description": "Complete-call summaries grouped by agent_name, with at most one null-agent group. Empty means available with no complete calls. Invalid or duplicate groups invalidate the entire source; no aggregate quantiles are fabricated."
+      },
+      "AgentRawLatencyRow": {
+        "type": "object", "additionalProperties": false, "required": ["agent_name", "call_count", "streaming_call_count", "ttft_ms", "tps_tokens_per_second", "tpot_ms_per_token", "e2e_latency_ms"],
+        "description": "One agent group for complete calls only; streaming_call_count <= call_count. Null agent_name and null quantiles stay null.",
+        "properties": { "agent_name": { "$ref": "#/components/schemas/AgentNullableText" }, "call_count": { "$ref": "#/components/schemas/AgentInteger" }, "streaming_call_count": { "$ref": "#/components/schemas/AgentInteger" }, "ttft_ms": { "$ref": "#/components/schemas/AgentQuantiles" }, "tps_tokens_per_second": { "$ref": "#/components/schemas/AgentQuantiles" }, "tpot_ms_per_token": { "$ref": "#/components/schemas/AgentQuantiles" }, "e2e_latency_ms": { "$ref": "#/components/schemas/AgentQuantiles" } }
+      },
+      "AgentProcessEvidence": {
+        "type": "object", "additionalProperties": false, "required": ["pid", "name", "role", "status", "ports", "lastCheckAt", "latencyMs", "parentPid", "hasCrash"],
+        "properties": { "pid": { "$ref": "#/components/schemas/AgentInteger" }, "name": { "$ref": "#/components/schemas/AgentText" }, "role": { "$ref": "#/components/schemas/AgentText" }, "status": { "$ref": "#/components/schemas/AgentProcessStatus" }, "ports": { "$ref": "#/components/schemas/AgentPorts" }, "lastCheckAt": { "$ref": "#/components/schemas/AgentNullableDateTime" }, "latencyMs": { "$ref": "#/components/schemas/AgentNullableInteger" }, "parentPid": { "$ref": "#/components/schemas/AgentNullableInteger" }, "hasCrash": { "type": "boolean" } }
+      },
+      "AgentSessionEvidence": {
+        "type": "object", "additionalProperties": false, "required": ["id", "agent", "model", "conversations", "inputTokens", "outputTokens", "firstSeenAt", "lastSeenAt"],
+        "properties": { "id": { "$ref": "#/components/schemas/AgentText" }, "agent": { "$ref": "#/components/schemas/AgentNullableText" }, "model": { "$ref": "#/components/schemas/AgentNullableText" }, "conversations": { "$ref": "#/components/schemas/AgentInteger" }, "inputTokens": { "$ref": "#/components/schemas/AgentInteger" }, "outputTokens": { "$ref": "#/components/schemas/AgentInteger" }, "firstSeenAt": { "$ref": "#/components/schemas/AgentNullableDateTime" }, "lastSeenAt": { "$ref": "#/components/schemas/AgentNullableDateTime" } }
+      },
+      "AgentInterruptionEvidence": {
+        "type": "object", "additionalProperties": false, "required": ["id", "sessionId", "callId", "pid", "agent", "type", "severity", "occurredAt", "resolved"],
+        "properties": { "id": { "$ref": "#/components/schemas/AgentText" }, "sessionId": { "$ref": "#/components/schemas/AgentNullableText" }, "callId": { "$ref": "#/components/schemas/AgentNullableText" }, "pid": { "$ref": "#/components/schemas/AgentNullableInteger" }, "agent": { "$ref": "#/components/schemas/AgentNullableText" }, "type": { "$ref": "#/components/schemas/AgentText" }, "severity": { "$ref": "#/components/schemas/AgentSeverity" }, "occurredAt": { "$ref": "#/components/schemas/AgentNullableDateTime" }, "resolved": { "type": "boolean" } }
+      },
+      "AgentLatencyEvidence": {
+        "type": "object", "additionalProperties": false, "required": ["agent", "calls", "streamingCalls", "ttftP95Ms", "e2eP95Ms", "tpsP50", "tpotP95Ms"],
+        "properties": { "agent": { "$ref": "#/components/schemas/AgentNullableText" }, "calls": { "$ref": "#/components/schemas/AgentInteger" }, "streamingCalls": { "$ref": "#/components/schemas/AgentInteger" }, "ttftP95Ms": { "$ref": "#/components/schemas/AgentNullableNumber" }, "e2eP95Ms": { "$ref": "#/components/schemas/AgentNullableNumber" }, "tpsP50": { "$ref": "#/components/schemas/AgentNullableNumber" }, "tpotP95Ms": { "$ref": "#/components/schemas/AgentNullableNumber" } }
+      },
+      "AgentDiagnostic": {
+        "type": "object", "additionalProperties": false, "description": "Exact projection of src/agent-diagnostics-data.ts AgentDiagnostic. status describes evidence coverage, not health. observed asserts observations only, never normal business behavior. Clear events may yield abnormal even with partial coverage; empty, stale or incomplete evidence without clear events yields unknown.",
+        "required": ["source", "analyzer", "sampledAt", "window", "status", "outcome", "summary", "lastScanAt", "filteredProcesses", "coverage", "totals", "findings", "processes", "sessions", "interruptions", "latency"],
+        "properties": {
+          "source": { "const": "agentsight" }, "analyzer": { "const": "sysom-openapi" }, "sampledAt": { "$ref": "#/components/schemas/AgentDateTime" }, "window": { "$ref": "#/components/schemas/AgentWindow" },
+          "status": { "type": "string", "enum": ["ok", "partial", "unavailable"] }, "outcome": { "type": "string", "enum": ["observed", "abnormal", "unknown"] }, "summary": { "type": "string" },
+          "lastScanAt": { "$ref": "#/components/schemas/AgentNullableDateTime" }, "filteredProcesses": { "$ref": "#/components/schemas/AgentNullableInteger" },
+          "coverage": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "type": "object", "additionalProperties": false, "required": ["key", "status", "reason"], "properties": { "key": { "type": "string", "enum": ["processes", "sessions", "interruptions", "interruptionCounts", "latency"] }, "status": { "$ref": "#/components/schemas/AgentSourceStatus" }, "reason": { "type": "string" } } } },
+          "totals": { "type": "object", "additionalProperties": false, "required": ["sessions", "inputTokens", "outputTokens", "unresolved", "critical", "high"], "properties": { "sessions": { "$ref": "#/components/schemas/AgentNullableInteger" }, "inputTokens": { "$ref": "#/components/schemas/AgentNullableInteger" }, "outputTokens": { "$ref": "#/components/schemas/AgentNullableInteger" }, "unresolved": { "$ref": "#/components/schemas/AgentNullableInteger" }, "critical": { "$ref": "#/components/schemas/AgentNullableInteger" }, "high": { "$ref": "#/components/schemas/AgentNullableInteger" } } },
+          "findings": { "type": "array", "maxItems": 462, "items": { "type": "object", "additionalProperties": false, "required": ["severity", "title", "detail", "suggestion"], "properties": { "severity": { "type": "string", "enum": ["info", "warning", "error"] }, "title": { "type": "string" }, "detail": { "type": "string" }, "suggestion": { "type": "string" } } } },
+          "processes": { "type": "array", "maxItems": 256, "items": { "$ref": "#/components/schemas/AgentProcessEvidence" } }, "sessions": { "type": "array", "maxItems": 500, "items": { "$ref": "#/components/schemas/AgentSessionEvidence" } },
+          "interruptions": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/AgentInterruptionEvidence" } }, "latency": { "type": "array", "maxItems": 256, "items": { "$ref": "#/components/schemas/AgentLatencyEvidence" } }
+        }
+      },
+      "AgentDiagnosticResponse": {
+        "type": "object", "additionalProperties": false, "required": ["schema_version", "request_id", "task_id", "mode", "read_only", "report", "task"],
+        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "task_id": { "$ref": "#/components/schemas/UUID" }, "mode": { "const": "mock" }, "read_only": { "const": true }, "report": { "$ref": "#/components/schemas/AgentDiagnostic" }, "task": { "$ref": "#/components/schemas/Task", "properties": { "operation": { "const": "agent-diagnose" } } } }
+      },
+      "Quantity": {
+        "type": "object", "additionalProperties": false, "required": ["value", "unit"],
+        "properties": { "value": { "type": "number", "minimum": 0 }, "unit": { "type": "string", "enum": ["B", "B/s", "W", "count"] }, "total": { "type": "number", "minimum": 0 }, "available": { "type": "number", "minimum": 0 } }
+      },
+      "ResourceSession": {
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "status", "usage", "cleanable", "defaultSelected"],
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "status": { "type": "string", "enum": ["active", "idle", "completed"] }, "usage": { "type": "number" }, "cleanable": { "type": "boolean" }, "defaultSelected": { "type": "boolean" } }
+      },
+      "ResourceRow": {
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "detail", "usage", "cleanable", "defaultSelected", "effect"],
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "detail": { "type": "string" }, "usage": { "type": "number" }, "cleanable": { "type": "boolean" }, "defaultSelected": { "type": "boolean" }, "effect": { "type": "string" }, "pid": { "type": "integer", "minimum": 0 }, "starttime": { "type": "integer", "minimum": 0 }, "agentKind": { "type": "string" }, "quantity": { "$ref": "#/components/schemas/Quantity" }, "agentId": { "type": "string" }, "sessions": { "type": "array", "items": { "$ref": "#/components/schemas/ResourceSession" } } }
+      },
+      "GpuDevice": {
+        "type": "object", "additionalProperties": false,
+        "required": ["index", "name", "uuid", "busId", "utilization", "memoryUtilization", "memoryUsedBytes", "memoryTotalBytes", "temperatureCelsius", "powerWatts", "powerLimitWatts", "eccCorrected", "eccUncorrected", "pcieGeneration", "pcieMaxGeneration", "pcieWidth"],
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 }, "name": { "type": "string" }, "uuid": { "type": "string" }, "busId": { "type": "string" },
+          "utilization": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }, "memoryUtilization": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+          "memoryUsedBytes": { "type": ["number", "null"], "minimum": 0 }, "memoryTotalBytes": { "type": ["number", "null"], "minimum": 0 },
+          "temperatureCelsius": { "type": ["number", "null"], "minimum": 0 }, "powerWatts": { "type": ["number", "null"], "minimum": 0 }, "powerLimitWatts": { "type": ["number", "null"], "minimum": 0 },
+          "eccCorrected": { "type": ["number", "null"], "minimum": 0 }, "eccUncorrected": { "type": ["number", "null"], "minimum": 0 },
+          "pcieGeneration": { "type": ["number", "null"], "minimum": 0 }, "pcieMaxGeneration": { "type": ["number", "null"], "minimum": 0 }, "pcieWidth": { "type": ["number", "null"], "minimum": 0 }
+        }
+      },
+      "GpuDiagnostic": {
+        "type": "object", "additionalProperties": false,
+        "required": ["status", "outcome", "sampledAt", "source", "complete", "gpuCount", "architectures", "devices", "summary", "findings"],
+        "properties": {
+          "status": { "type": "string", "enum": ["not_run", "ok", "partial", "unavailable", "error", "timeout", "truncated", "permission_denied"] },
+          "outcome": { "type": "string", "enum": ["normal", "abnormal", "unknown", "no_gpu"] },
+          "sampledAt": { "type": ["string", "null"], "format": "date-time" }, "source": { "type": "string", "const": "sysak ai" },
+          "complete": { "type": "boolean" }, "gpuCount": { "type": ["integer", "null"], "minimum": 0 },
+          "architectures": { "type": "array", "maxItems": 32, "items": { "type": "string" } }, "devices": { "type": "array", "maxItems": 32, "items": { "type": "string" } },
+          "summary": { "type": "string" },
+          "findings": { "type": "array", "maxItems": 256, "items": { "$ref": "#/components/schemas/GpuFinding" } },
+          "jobAnalysis": { "$ref": "#/components/schemas/GpuJobAnalysis" }
+        }
+      },
+      "GpuFinding": {
+        "type": "object", "additionalProperties": false, "required": ["check", "severity", "message"],
+        "properties": { "check": { "type": "string", "maxLength": 128 }, "severity": { "type": "string", "enum": ["OK", "WARN", "ERROR"] }, "message": { "type": "string", "maxLength": 1024 }, "suggestion": { "type": "string", "maxLength": 1024 } }
+      },
+      "GpuJobProcess": {
+        "type": "object", "additionalProperties": false,
+        "required": ["pid", "starttime", "name", "state", "cpuPercent", "rssBytes", "gpuIndices", "smUtilization", "memoryUtilization", "status", "findings"],
+        "properties": {
+          "pid": { "type": "integer", "minimum": 1, "maximum": 2147483647 }, "starttime": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+          "name": { "type": "string", "maxLength": 256 }, "state": { "type": "string", "maxLength": 16 }, "cpuPercent": { "type": ["number", "null"], "minimum": 0 }, "rssBytes": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+          "gpuIndices": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "integer", "minimum": 0, "maximum": 31 } },
+          "smUtilization": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }, "memoryUtilization": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+          "status": { "type": "string", "enum": ["not_run", "ok", "partial", "unavailable", "error", "timeout", "truncated", "permission_denied"] },
+          "findings": { "type": "array", "maxItems": 256, "items": { "$ref": "#/components/schemas/GpuFinding" } }
+        }
+      },
+      "GpuJobAnalysis": {
+        "type": "object", "additionalProperties": false, "required": ["status", "source", "sampledAt", "sampleWindowSeconds", "complete", "reason", "processes"],
+        "properties": {
+          "status": { "type": "string", "enum": ["not_run", "ok", "partial", "unavailable", "error", "timeout", "truncated", "permission_denied"] }, "source": { "type": "string", "const": "sysak ai" }, "sampledAt": { "type": ["string", "null"], "format": "date-time" },
+          "sampleWindowSeconds": { "type": ["number", "null"], "minimum": 0, "maximum": 10 }, "complete": { "type": "boolean" }, "reason": { "type": "string" },
+          "processes": { "type": "array", "maxItems": 128, "items": { "$ref": "#/components/schemas/GpuJobProcess" } }
+        }
+      },
+      "ResourceSnapshot": {
+        "type": "object", "additionalProperties": false, "required": ["id", "label", "usage", "capacity", "unit", "rows"],
+        "properties": { "id": { "$ref": "#/components/schemas/ResourceId" }, "label": { "type": "string" }, "usage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }, "capacity": { "type": ["number", "null"] }, "unit": { "type": "string" }, "source": { "type": "string", "enum": ["sysak", "demo"] }, "status": { "type": "string", "enum": ["available", "partial", "unavailable"] }, "note": { "type": "string" }, "quantity": { "$ref": "#/components/schemas/Quantity" }, "rankLabel": { "type": "string" }, "rankUnit": { "type": "string", "enum": ["%", "B", "B/s", "W", "count"] }, "sampledAt": { "type": "string", "format": "date-time" }, "gpuDevices": { "type": "array", "maxItems": 32, "items": { "$ref": "#/components/schemas/GpuDevice" } }, "rows": { "type": "array", "items": { "$ref": "#/components/schemas/ResourceRow" } } }
+      },
+      "Inspection": {
+        "type": "object", "additionalProperties": false, "required": ["id", "label", "important", "phase", "status", "usage", "detail", "evidence"],
+        "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "important": { "type": "boolean" }, "phase": { "type": "integer", "enum": [1, 2] }, "status": { "type": "string", "enum": ["normal", "abnormal", "unchecked"] }, "usage": { "type": ["number", "null"] }, "detail": { "type": "string" }, "execution": { "type": "string", "enum": ["complete", "partial", "unavailable"] }, "evidence": { "type": "array", "items": { "type": "string" } } }
+      },
+      "Optimization": {
+        "type": "object", "additionalProperties": false, "required": ["id", "inspection", "title", "action", "effect"],
+        "properties": { "id": { "type": "string" }, "inspection": { "type": "string" }, "title": { "type": "string" }, "action": { "type": "string" }, "effect": { "type": "string" } }
+      },
+      "HealthOperation": {
+        "type": "object", "additionalProperties": false, "required": ["id", "kind", "names", "time", "revision"],
+        "properties": { "id": { "type": "string" }, "kind": { "type": "string", "enum": ["cleanup", "session-cleanup", "optimize", "inspect", "demo-alert"] }, "names": { "type": "array", "items": { "type": "string" } }, "time": { "type": "string", "format": "date-time" }, "revision": { "type": "integer", "minimum": 1 } }
+      },
+      "HealthState": {
+        "type": "object", "additionalProperties": false, "required": ["mode", "hasGpu", "revision", "sampledAt", "resources", "inspections", "optimizations", "operations"],
+        "description": "Collected real evidence in the existing UI layout. Resource usage is independently measured, never summed from top process rows. Unknown percentages are null. Quantities have explicit units. Energy is CPU package average watts, not total system energy or a budget percentage. No Agent/Session attribution, fake history or writable objects.",
+        "properties": {
+          "mode": { "type": "string", "const": "collected" }, "hasGpu": { "type": "boolean" }, "revision": { "type": "integer", "minimum": 1 }, "sampledAt": { "type": "string", "format": "date-time" }, "gpuDiagnostic": { "$ref": "#/components/schemas/GpuDiagnostic" },
+          "resources": { "type": "object", "additionalProperties": false, "required": ["cpu", "energy", "memory", "disk", "gpu"], "properties": { "cpu": { "$ref": "#/components/schemas/ResourceSnapshot" }, "energy": { "$ref": "#/components/schemas/ResourceSnapshot" }, "memory": { "$ref": "#/components/schemas/ResourceSnapshot" }, "disk": { "$ref": "#/components/schemas/ResourceSnapshot" }, "gpu": { "$ref": "#/components/schemas/ResourceSnapshot" } } },
+          "inspections": { "type": "array", "items": { "$ref": "#/components/schemas/Inspection" } }, "optimizations": { "type": "array", "items": { "$ref": "#/components/schemas/Optimization" } }, "operations": { "type": "array", "maxItems": 30, "items": { "$ref": "#/components/schemas/HealthOperation" } }
+        }
+      }
+    }
+  }
+}

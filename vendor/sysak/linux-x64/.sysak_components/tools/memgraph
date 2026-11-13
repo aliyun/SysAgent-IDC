@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import sys
+import os
+import json
+import plugin_meminfo
+import plugin_taskProc
+import plugin_podDetect
+import plugin_cache
+import plugin_memleak
+import plugin_abnormalPackages
+import plugin_vmRssTaskTop
+import plugin_anonTaskTop
+import plugin_memgraph
+import plugin_memcgLeak
+import plugin_memfrag
+import plugin_skcheck
+import plugin_appmem
+import plugin_thpCollect
+
+# import memgraph_plugins
+from plugin_system import execute_plugins
+
+import mem_utils
+import getopt
+
+if os.geteuid() != 0:
+    print("This program must be run as root. Aborting.")
+    sys.exit(1)
+
+
+def memgraph_handler_cmd(argv):
+    supported_short_opts = "hgfakldi:j:p:It"
+    supported_long_opts = [
+        "help",
+        "graph",
+        "filecache",
+        "filecache-top=",
+        "filecache-rate=",
+        "force-scan",
+        "anon",
+        "memleak",
+        "vmrss",
+        "diagnose",
+        "jsonstdout",
+        "interval=",
+        "json=",
+        "podname=",
+        "ignore-unsupported",
+        "app-mem=",
+        "pid=",
+        "profiling-duration=",
+        "socket",
+        "debug",
+        "thp",
+    ]
+
+    # 过滤掉不支持的参数
+    filtered_argv = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg.startswith("--"):
+            # 长选项
+            if any(
+                arg[2:] == opt or opt.endswith("=") and arg[2:].startswith(opt[:-1])
+                for opt in supported_long_opts
+            ):
+                filtered_argv.append(arg)
+                # 如果是需要参数的长选项，并且下一个参数存在
+                if arg in [
+                    "--%s" % (opt.split("=")[0])
+                    for opt in supported_long_opts
+                    if opt.endswith("=")
+                ]:
+                    if i + 1 < len(argv):
+                        i += 1
+                        filtered_argv.append(argv[i])
+        elif arg.startswith("-"):
+            # 短选项
+            for ch in arg[1:]:
+                if ch not in supported_short_opts:
+                    continue
+                filtered_argv.append("-%s" % (ch))
+        else:
+            filtered_argv.append(arg)
+        i += 1
+
+    try:
+        opts, args = getopt.getopt(
+            filtered_argv,
+            supported_short_opts,
+            supported_long_opts,
+        )
+    except getopt.GetoptError as err:
+        print("Get opt error: %s" % (str(err)))
+        sys.exit(2)
+
+    enable_plugins = [
+        {"name": "memcgLeak", "params": {}},
+        {"name": "memfrag", "params": {}},
+        {"name": "thpCollect", "params": {}},
+    ]
+    
+    app_mem_params = {
+        "name": "appMem",
+        "params": {}
+    }
+
+    json_path = ""
+    json_stdout = False
+    enable_memleak = False
+    enable_pod = False
+    memleak_detect_duration = 60
+    is_debug = False
+    
+    # filecache 参数
+    filecache_top = 30
+    filecache_rate = 0
+    filecache_force_scan = False
+    filecache_top = 30  # 默认 Top 30（向后兼容）
+    filecache_rate = 0  # 0=自动采样率
+    for opt, arg in opts:
+        if opt in ("-h", "--help"):
+            print("Usage: memgraph [options]")
+            print("Options:")
+            print("  -h, --help               Show this help message and exit")
+            print("  -g, --graph              Only show memory usage graph")
+            print("  -f, --filecache          Show file cache usage detail")
+            print("      --filecache-top=N    Set top N files to analyze (default: 30)")
+            print("      --filecache-rate=R   Set page sampling rate (default: auto based on memory size)")
+            print("  -k, --memleak            Check kernel memleak")
+            print(
+                "  -i, --interval=duration  Set memleak detect duration (default: 60, min: 0, max: 300)"
+            )
+            print("  -a, --anon               Show anon page usage detail")
+            print("  -l, --vmrss              Show memory usage of thread")
+            print("  -j, --json=path          Output result to a JSON file")
+            print("  -p, --podname=name       Memgraph for specific pod")
+            print("  -I, --ignore-unsupported Ignore unsupported options")
+            print("  --app-mem=app_type       Show memory usage of certain app('all', 'java', 'go(supporting)')")
+            print("  --pid=pid                app-profiling for specific pid")
+            print("  --profiling-duration=duration  Set profiling duration for app-mem (default: 0, min: 0, max: 600)")
+            print("  -t, --thp               Show Transparent Huge Pages (THP) statistics")
+            sys.exit()
+        elif opt in ("-g", "--graph"):
+            enable_plugins.append({"name": "memgraph", "params": {}})
+        elif opt in ("-j", "--json"):
+            json_path = arg
+        elif opt in ("--jsonstdout"):
+            json_stdout = True
+        elif opt in ("-f", "--filecache"):
+            enable_plugins.append({"name": "cache", "params": {}})
+        elif opt in ("--filecache-top"):
+            filecache_top = int(arg)
+        elif opt in ("--filecache-rate"):
+            filecache_rate = int(arg)
+        elif opt in ("--force-scan"):
+            filecache_force_scan = True
+        elif opt in ("-a", "--anon"):
+            enable_plugins.append({"name": "anonTaskTop", "params": {"topN": 30}})
+        elif opt in ("-l", "--vmrss"):
+            enable_plugins.append({"name": "vmRssTaskTop", "params": {"topN": 30}})
+        elif opt in ("-k", "--memleak"):
+            enable_memleak = True
+        elif opt in ("-d", "--diagnose"):
+            enable_plugins.append({"name": "abnormalPackages", "params": {}})
+        elif opt in ("--app-mem"):
+            app_type = arg
+            app_mem_params["params"]["app_type"] = app_type
+        elif opt in ("-p", "--podname"):
+            pod_name = arg
+            enable_plugins.insert(
+                0, {"name": "podDetect", "params": {"pod_name": pod_name}}
+            )
+            mem_utils.set_podinfo_lib()
+            enable_pod = True
+        elif opt in ("--pid"):
+            pid = arg
+            app_mem_params["params"]["pid"] = pid
+        elif opt in ("--profiling-duration"):
+            profiling_duration = int(arg)
+            if profiling_duration < 0:
+                profiling_duration = 0
+            if profiling_duration > 600:
+                profiling_duration = 600
+            app_mem_params["params"]["profiling_duration"] = profiling_duration
+        elif opt in ("-i", "--interval"):
+            memleak_detect_duration = int(arg)
+            if memleak_detect_duration < 0:
+                memleak_detect_duration = 60
+            elif memleak_detect_duration > 300:
+                memleak_detect_duration = 300
+        elif opt in ("--socket"):
+            enable_plugins.append({"name": "socketCheck", "params": {}})
+        elif opt in ("-t", "--thp"):
+            if not any(p["name"] == "thpCollect" for p in enable_plugins):
+                enable_plugins.append({"name": "thpCollect", "params": {}})
+        elif opt in ("--debug"):
+            mem_utils.is_debug = True
+        elif opt in ("-I", "--ignore-unsupported"):
+            ignore_unsupported = True
+    
+    if app_mem_params['params']:
+        enable_plugins.append(app_mem_params)
+
+    if enable_memleak:
+        enable_plugins.append(
+            {
+                "name": "memleak",
+                "params": {"memleak_detect_duration": memleak_detect_duration},
+            }
+        )
+    
+    # 更新 cache 插件的参数
+    for plugin in enable_plugins:
+        if plugin.get("name") == "cache":
+            plugin["params"]["topN"] = min(filecache_top, 100)  # 限制最大 100
+            plugin["params"]["sample_rate"] = filecache_rate
+            plugin["params"]["force_scan"] = filecache_force_scan
+            break
+
+    res = execute_plugins(enable_plugins, enable_pod)
+    if not json_path:
+        if json_stdout:
+            print(json.dumps(res.generate_json_result()))
+        else:
+            render_text = None
+            try:
+                # 尝试直接打印
+                render_text = res.generate_render_text()
+                print(render_text)
+            except (UnicodeEncodeError, UnicodeDecodeError) as e:
+                # Python 2 ASCII编码错误：尝试使用UTF-8编码
+                if not render_text:
+                    render_text = res.generate_render_text()
+                if sys.version_info[0] < 3:
+                    if isinstance(render_text, unicode):
+                        print(render_text.encode('utf-8', errors='replace'))
+                    else:
+                        print(render_text)
+                else:
+                    # Python 3: 使用errors='replace'重新编码
+                    print(render_text.encode('utf-8', errors='replace').decode('utf-8', errors='replace'))
+    else:
+        with open(json_path, "w") as f:
+            f.write(json.dumps(res.generate_json_result()))
+    return res
+
+
+if __name__ == "__main__":
+    memgraph_handler_cmd(sys.argv[1:])

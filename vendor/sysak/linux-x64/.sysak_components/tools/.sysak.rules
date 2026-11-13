@@ -1,0 +1,4 @@
+detect/generic:idc:python-dep{python3}:help{只读采集本机 IDC 证据，并提供独立、受限的当前用户进程检查和 SIGTERM 接口。}
+detect/generic:resource_anomaly:python-dep{python3}:help{}
+detect/mem:memgraph:python-dep{python3}:help{统计显示系统内存大图信息}
+generic:ai::help{GPU AI diagnostics}

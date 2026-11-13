@@ -1,0 +1,52 @@
+{
+  "name": "sysagent-ide",
+  "displayName": "SysAgent管家",
+  "description": "在 Qoder、VS Code 中采集本机资源、执行有界诊断、筛选 Agent 及确认结束受控进程（Linux x64，需桌面安装的 IDC 服务与 Python 3.9+）",
+  "extensionKind": [
+    "ui"
+  ],
+  "version": "0.2.17",
+  "publisher": "sysagent-local",
+  "private": true,
+  "license": "MIT",
+  "icon": "dist/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "sysagent.openHome",
+        "title": "打开体检主页",
+        "category": "SysAgent管家"
+      },
+      {
+        "command": "sysagent.inspect",
+        "title": "立即巡检本机",
+        "category": "SysAgent管家"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p webview/tsconfig.json",
+    "test": "npm run build && node test/webview-acceptance.cjs",
+    "test:vscode": "npm run build && node test/run-vscode.cjs",
+    "package": "npm run typecheck && npm run build && mkdir -p release && vsce package --no-dependencies --allow-missing-repository --no-rewrite-relative-links -o release/sysagent-ide-${npm_package_version}.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.7.2"
+  }
+}

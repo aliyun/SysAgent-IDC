@@ -1,0 +1,1157 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>SysAgent 管家功能与使用指南</title><style>
+:root{color-scheme:light;font-family:system-ui,-apple-system,"Noto Sans CJK SC",sans-serif;color:#203b52;background:#edf3f8;line-height:1.8}
+*{box-sizing:border-box}body{margin:0}a{color:#2266a0;text-decoration:none}a:hover{text-decoration:underline}
+header{background:#173952;color:white;padding:30px 40px}header strong{display:block;font-size:26px}header span{font-size:14px;opacity:.85}
+.layout{max-width:1560px;margin:auto;display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px;padding:24px}
+nav{position:sticky;top:20px;align-self:start;background:white;border-radius:12px;padding:20px;max-height:calc(100vh - 40px);overflow:auto;font-size:14px}
+nav a{display:block;padding:7px 0;border-bottom:1px solid #eef2f5}main{min-width:0;background:white;padding:35px 48px;border-radius:12px}
+h1,h2,h3,h4{line-height:1.5;scroll-margin-top:25px}h1{font-size:30px}h2{font-size:25px;margin-top:48px;padding-bottom:10px;border-bottom:2px solid #dcebf5}h3{font-size:20px;margin-top:30px}
+p,li{font-size:16px}blockquote{margin:24px 0;padding:10px 22px;border-left:5px solid #d5a642;background:#fff8e8}blockquote p{font-size:15px}
+img{display:block;width:100%;height:auto;margin:22px auto;border:1px solid #dce4ec;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;display:block;overflow-x:auto;margin:20px 0}th,td{border:1px solid #d9e4ec;padding:10px 14px;vertical-align:top;min-width:110px}th{background:#eaf3fa;text-align:left}tr:nth-child(even){background:#fafcfe}
+pre{background:#152f43;color:#e7f0f7;padding:20px;border-radius:10px;overflow:auto;font-size:13px;line-height:1.6}code{font-family:ui-monospace,monospace}p code,td code,li code{background:#edf3f8;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}hr{border:0;border-top:1px solid #e3ebf1;margin:35px 0}
+@media(max-width:900px){.layout{display:block;padding:12px}nav{position:static;max-height:none;margin-bottom:14px}main{padding:22px}header{padding:22px}h1{font-size:25px}h2{font-size:22px}}
+@media print{header,nav{display:none}.layout{display:block;padding:0}main{padding:0}h2{break-before:page}img,pre{break-inside:avoid}a{color:inherit}}
+</style></head><body><header><strong>SysAgent 管家 · 功能与使用指南</strong><span>当前界面图解 / 操作与输出 / 第三方对接 / 完成状态 · 本地离线阅读</span></header><div class="layout"><nav aria-label="文档目录"><a href="#section-1">SysAgent 管家功能与使用指南</a><a href="#section-2">阅读路线</a><a href="#section-3">1. 它是什么，能帮你做什么</a><a href="#section-5">2. 首次打开：先确认服务，再看数据</a><a href="#section-10">3. 体检首页：读懂概况、评分与巡检</a><a href="#section-16">4. 资源详情：指标、排行和进程结束</a><a href="#section-20">5. GPU 诊断：把资源、执行状态和结论分开</a><a href="#section-25">6. Agent 管家：看元数据，不代替业务诊断</a><a href="#section-33">7. 设备、部署、日志与公共操作：演示能力说明</a><a href="#section-37">8. 报告与输出：导出的是什么</a><a href="#section-38">9. 已完成、部分完成、演示与待完成</a><a href="#section-40">10. 第三方程序怎样对接</a><a href="#section-49">11. 代码结构与扩展接入</a><a href="#section-53">12. 常见疑问速查</a><a href="FUNCTION-USER-GUIDE.md">Markdown 源文档</a></nav><main><h1 id="section-1">SysAgent 管家功能与使用指南</h1>
+<p><strong>适用范围：SysAgent 0.2.17 当前源码 · 独立 AgentSight 0.16.0 · 整理日期：2026-11-13</strong></p>
+<p>面向第一次使用管家的用户，以及希望让脚本、其他应用查询管家数据的开发者。<a href="./FUNCTION-USER-GUIDE.html">打开浏览器阅读版</a>；复制文档时请同时保留 <code>assets/user-guide/</code> 配图目录。</p>
+<blockquote>
+<p><strong>先分清三件事：</strong> 有页面，不等于已有真实后端；请求成功，不等于设备或业务正常；源码已实现，不等于正在运行的旧安装包已更新。</p>
+<p>本文配图来自改名前 0.2.15 React 界面的隔离浏览器运行，不是设计稿；保留原始说明性截图，画面中的 SysOM 名称与旧时间格式不代表 0.2.17 的显示。资源、GPU、Agent 报告使用人工构造的说明性证据；设备、日志、部署和 GPU 事件页面含内置 Demo。截图下方均有标注，不代表这台机器的实测结果，也没有执行真实采集、结束进程、安装或模型调用。桌面浮窗与 IDE 外壳按当前实现说明；配图不替代本批次独立的原生验收，具体范围见“验证范围说明”。</p>
+</blockquote>
+<h2 id="section-2">阅读路线</h2>
+<ul>
+<li><strong>普通用户：</strong> 先读第 1–3 节，再按需要查看资源、GPU 或 Agent 用法。</li>
+<li><strong>判断哪些能用：</strong> 看第 9 节完成状态表；不要仅凭按钮判断。</li>
+<li><strong>第三方开发者：</strong> 看第 10–11 节，完整参数和安全约束见<a href="./LOCAL-HTTP-API.md">本机 HTTP API 文档</a>。</li>
+<li><strong>安装与升级：</strong> 以<a href="../README.md">项目 README</a>中的当前发布批次说明为准，本文不替代安装说明。</li>
+</ul>
+<hr />
+<h2 id="section-3">1. 它是什么，能帮你做什么</h2>
+<p>SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进程和 Agent 运行证据收集起来，再说明哪些有问题、哪些没有足够证据，最后提供详情与报告。</p>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>主要回答的问题</th>
+<th>当前能力概况</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>体检首页</td>
+<td>本机资源是否紧张？哪些检查需要关注？</td>
+<td>真实资源、部分体检、评分、报告与巡检配置</td>
+</tr>
+<tr>
+<td>资源详情</td>
+<td>谁占用 CPU、内存或产生磁盘 I/O？</td>
+<td>已采集进程 Top10、Agent 筛选、受控进程结束</td>
+</tr>
+<tr>
+<td>设备管理</td>
+<td>能否查看和切换设备？</td>
+<td>本机部分指标真实；远程设备与接入流程为演示</td>
+</tr>
+<tr>
+<td>GPU 诊断</td>
+<td>卡上有什么指标？是否有异常证据？</td>
+<td>本机逐卡资源、按需原生 AI 检查、部分作业证据；事件案例为演示</td>
+</tr>
+<tr>
+<td>Agent 管家</td>
+<td>Agent 进程、会话、Token、中断和延迟怎样？</td>
+<td>独立 AgentSight → SysAgent 分析 → 本机只读报告</td>
+</tr>
+<tr>
+<td>研发运维</td>
+<td>部署流程如何组织？</td>
+<td>确认后运行模拟流程，不部署真实应用</td>
+</tr>
+<tr>
+<td>日志分析</td>
+<td>如何筛选日志并查看分析进度？</td>
+<td>内置日志与模拟任务，不是本机日志平台</td>
+</tr>
+<tr>
+<td>本机查询接口</td>
+<td>其他程序能读到哪些结果？</td>
+<td>源码已实现只读 HTTP、15 个数据集及 OpenAPI 契约</td>
+</tr>
+</tbody>
+</table>
+<h3 id="section-4">两种使用入口</h3>
+<ul>
+<li><strong>桌面版：</strong> Electron 主窗口 + 浅蓝色悬浮小管家。</li>
+<li><strong>IDE 版：</strong> VS Code 兼容扩展的 Webview 面板 + 状态栏，例如 VS Code、Qoder IDE。Qoder Desktop 独立应用和 JetBrains 不是这份 VSIX 的宿主。</li>
+</ul>
+<p>两端复用主要页面与分析逻辑，但<strong>每个宿主实例的资源缓存、设备标识、巡检设置和 HTTP 查询实例独立</strong>。相同用户环境下可复用同一个 AgentSight 来源，不表示两端资源快照自动同步。IDE 查看的是本地扩展宿主所在机器，不是自动查看 SSH 远程工作区。</p>
+<p><img src="./assets/user-guide/architecture.svg" alt="双端与证据链结构" /></p>
+<p><strong>图 1：结构图。</strong> 外部程序只读管家缓存；内部分析接口、系统采集 socket 和公共查询 HTTP 是不同边界，不可混用凭据。</p>
+<h2 id="section-5">2. 首次打开：先确认服务，再看数据</h2>
+<h3 id="section-6">2.1 安装前提</h3>
+<p>当前发布主要面向 Linux x86_64 图形桌面，README 要求 glibc 2.38+，并说明管理员安装、systemd、Python 与 IDE 版本条件。建议新用户按 README 的离线包安装入口操作，而不是从源码目录找脚本尝试。</p>
+<ul>
+<li>日常启动桌面和 IDE 使用普通用户，<strong>不要用 sudo 启动 GUI</strong>。</li>
+<li>系统资源需要安装且授权当前用户的 sysAK IDC 服务。只复制 AppImage／VSIX 不会自动安装它。</li>
+<li>Agent 诊断依赖独立 AgentSight 配套件或已经运行的明确配置服务；不是可选 Python FastAPI 骨架。</li>
+<li>本文没有执行安装、修改服务、修改权限或升级软件。</li>
+</ul>
+<h3 id="section-7">2.2 桌面操作</h3>
+<ol>
+<li>从应用菜单打开“SysAgent管家”，或按 README 的入口启动。</li>
+<li>主窗口显示体检首页；点击左侧导航切换模块。</li>
+<li>关闭或最小化主页会收起为悬浮小管家，不是彻底退出。</li>
+<li>单击小管家恢复主页；按住拖动调整位置。</li>
+<li>要彻底退出，右键小管家选择“退出”。退出宿主后，该实例的巡检和本机查询服务停止；独立授权的 AgentSight trace/API 服务不因此停止。</li>
+</ol>
+<h3 id="section-8">2.3 IDE 操作</h3>
+<ol>
+<li>通过“从 VSIX 安装”安装当前插件，按提示重载 IDE。</li>
+<li>点击状态栏 SysAgent，或命令面板执行 <strong>SysAgent管家: 打开体检主页</strong>（<code>sysagent.openHome</code>）。</li>
+<li>命令 <strong>SysAgent管家: 立即巡检本机</strong>（<code>sysagent.inspect</code>）触发本机体检。</li>
+<li>关闭面板不等于扩展退出。状态栏告警可以打开相应健康详情；面板可再次打开。</li>
+</ol>
+<h3 id="section-9">2.4 数据拿不到时</h3>
+<p><img src="./assets/user-guide/19-collector-unavailable.png" alt="采集不可用页面" /></p>
+<p><strong>图 2：当前界面的缺服务状态示例。</strong> 没有资源证据时，不应生成假的评分、进程排行或“正常”结果。</p>
+<ul>
+<li>看到“整体数据暂不可用”，先读原因，再核对管理员安装和用户授权。</li>
+<li>处理服务问题后使用“重试加载”。不要把不可用理解为 CPU、内存或 GPU 为 0。</li>
+<li>资源服务与 AgentSight 是独立链路：系统资源不可用时，Agent 报告仍可能可用，反之亦然。</li>
+<li>刷新失败而保留的旧报告，应按<strong>旧采样时间</strong>解读，不当作本次结果。</li>
+</ul>
+<p><img src="./assets/user-guide/usage-flow.svg" alt="基本使用流程" /></p>
+<p><strong>图 3：推荐顺序。</strong> 先判断来源与覆盖是否足够，再解释异常，最后考虑操作。</p>
+<h2 id="section-10">3. 体检首页：读懂概况、评分与巡检</h2>
+<p><img src="./assets/user-guide/01-home.png" alt="体检首页" /></p>
+<p><strong>图 4：体检首页样例。</strong> 上部是评分与检查范围，下部是当前资源。截图中的数值是讲解样例，不是本机测量。</p>
+<h3 id="section-11">3.1 首页从上到下看什么</h3>
+<ol>
+<li><strong>本机健康中心：</strong> 当前页面对象；其他设备的静态名称不要当作本机硬件事实。</li>
+<li><strong>分数与颜色：</strong> 表示当前可评分证据的汇总；不是全机安全认证，也不是模型能力分数。</li>
+<li><strong>重要异常、其他异常、尚无定论：</strong> 区分确定的异常和缺少结论的项。</li>
+<li><strong>系统资源卡片：</strong> 当前占用、实测量、采样时间和详情入口。</li>
+<li><strong>体检项目：</strong> 各项结论、受限原因和已有证据。</li>
+<li><strong>性能监视／操作记录：</strong> 当前快照和本实例内的操作。真实模式没有持续历史曲线或持久化报告库。</li>
+</ol>
+<h3 id="section-12">3.2 三个常用按钮</h3>
+<table>
+<thead>
+<tr>
+<th>按钮</th>
+<th>做什么</th>
+<th>应当怎样理解输出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>刷新整体数据</td>
+<td>更新资源快照</td>
+<td>更新资源不表示所有深度诊断都已重新运行</td>
+</tr>
+<tr>
+<td>重新体检</td>
+<td>运行既有体检链路，解析结果后更新展示</td>
+<td>等待完成，检查各项来源和覆盖；失败不等于正常</td>
+</tr>
+<tr>
+<td>体检报告</td>
+<td>展示并导出当前报告</td>
+<td>使用当前已有快照，不是历史报告库</td>
+</tr>
+</tbody>
+</table>
+<p>“一键优化”主要属于 Demo 分支；真实采集模式不提供一键自动修复。实际进程结束是独立、需要确认的操作，见第 4 节。</p>
+<h3 id="section-13">3.3 评分：高分不代表所有问题已排除</h3>
+<p>可点击“评分计算规则”查看计算范围。当前公式可写成：</p>
+<pre><code class="language-text">分数 = 100 - 重要异常数 × (80 / 重要检查数)
+           - 其他异常数 × (20 / 其他项与已知资源总数)
+最终限制在 0～100；分母为 0 时对应扣分为 0。
+</code></pre>
+<ul>
+<li>公式中的“重要检查数”是当前重要项总数；“其他项与已知资源总数”是其他检查总数加上已取得的资源百分比个数。检查项即使未检查仍计入对应分母，所以必须同时看覆盖提示，不能只看数字。</li>
+<li>“重要异常”来自已检查、使用率超过 90% 的重要项。</li>
+<li>“其他异常”包含其他已确认异常及超过 90% 的已知资源百分比。</li>
+<li>能耗的 W 值不是百分比预算，不能当成“超过 90%”来扣分。</li>
+<li>缺失百分比不参与资源阈值比较；未检查、受限和不可用项没有正常结论。</li>
+<li>因此必须同时阅读“尚无定论”“资源不可用”和评分范围提示。100 分也不代表未知项已完成。</li>
+<li>图例区间为 <code>&lt;60</code>、<code>60–80</code>、<code>80–90</code>、<code>90–100</code>；颜色用于关注优先级，不替代实际证据。</li>
+</ul>
+<h3 id="section-14">3.4 巡检配置</h3>
+<p><img src="./assets/user-guide/02-inspection-settings.png" alt="巡检配置" /></p>
+<p><strong>图 5：巡检配置样例。</strong> 这里控制本实例的系统巡检，不是开启 AgentSight 的真实调用采集。</p>
+<p><img src="./assets/user-guide/02b-inspection-interval.png" alt="巡检周期表单" /></p>
+<p><strong>图 5 补充：周期预设与自定义入口。</strong></p>
+<ol>
+<li>点击右上“巡检配置”。</li>
+<li>查看启停、巡检周期、上次和下次巡检。</li>
+<li>点击周期可选择 1、5、15、30、60 分钟等预设，或自定义小时和分钟。</li>
+<li>合计须为 <strong>1–1440 分钟的整数</strong>；24 小时时分钟必须为 0。默认 5 分钟。</li>
+<li>保存后重新计时；暂停或退出该宿主后停止此巡检。</li>
+</ol>
+<p>“暂无巡检”是未记录上次巡检，不表示故障；“暂不可用”先核对安装。界面轮询缓存与真正运行巡检不是同一件事。</p>
+<h3 id="section-15">3.5 每个体检项目的结论</h3>
+<p><img src="./assets/user-guide/05-inspections.png" alt="体检项目详情" /></p>
+<p><strong>图 6：项目列表样例。</strong> 每项必须结合结论、执行状态和证据阅读。</p>
+<table>
+<thead>
+<tr>
+<th>显示内容</th>
+<th>含义</th>
+<th>下一步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正常</td>
+<td>本次已检查项在已有规则下未发现对应异常</td>
+<td>仍核对采样时间和范围</td>
+</tr>
+<tr>
+<td>异常</td>
+<td>已有证据满足异常条件</td>
+<td>查看证据和建议，确认业务影响</td>
+</tr>
+<tr>
+<td>未检查</td>
+<td>没有本项检查结果</td>
+<td>不下正常结论</td>
+</tr>
+<tr>
+<td>已检查 · 结论受限</td>
+<td>尝试完成了一部分检查</td>
+<td>阅读缺失原因，不扩大结论范围</td>
+</tr>
+<tr>
+<td>已尝试 · 不可用</td>
+<td>检查通道未取得可用数据</td>
+<td>核对服务、权限、工具和硬件</td>
+</tr>
+</tbody>
+</table>
+<p>当前根分区、FD 与内存检查已有链路，但目录扫描范围、进程数量、插件或权限可能限制覆盖。独立 Agent 管家可用，<strong>不等于首页“Agent 状态”检查项已实现</strong>；首页日志、网络、I/O 等项仍有待接入部分。</p>
+<h2 id="section-16">4. 资源详情：指标、排行和进程结束</h2>
+<h3 id="section-17">4.1 单位不要读错</h3>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>首页代表什么</th>
+<th>进程排行代表什么</th>
+<th>不是哪种数据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU</td>
+<td>本机 CPU 使用率</td>
+<td>进程 CPU 占整机的份额</td>
+<td>不一定等于单核口径的系统工具数值</td>
+</tr>
+<tr>
+<td>内存</td>
+<td>实测内存使用／总量及比例</td>
+<td>RSS 常驻内存，按 B／MiB／GiB 显示</td>
+<td>不是进程全部虚拟地址空间</td>
+</tr>
+<tr>
+<td>磁盘</td>
+<td>已采集文件系统的空间使用与可用量</td>
+<td><strong>进程读写 I/O 速率，单位 B/s</strong></td>
+<td>不是目录大小，不是进程占据了多少磁盘空间</td>
+</tr>
+<tr>
+<td>能耗</td>
+<td>已取得的 package 功率 W，缺测则不可用</td>
+<td>仅展示已有测量；可能没有进程列表</td>
+<td>不是累计电量 kWh，不是估算预算百分比</td>
+</tr>
+<tr>
+<td>GPU</td>
+<td>已有 GPU 利用率及逐卡指标</td>
+<td>以实际采集字段和范围为准</td>
+<td>不能把卡级利用率分摊为每个进程利用率</td>
+</tr>
+</tbody>
+</table>
+<p><code>1 GiB = 1024³ B</code>，<code>1 MiB = 1024² B</code>。<code>B/s</code> 是每秒字节数；<code>W</code> 是即时功率。0 是实际观测零值；<code>—</code>、<code>N/A · 不可用</code>、<code>null</code> 是没有可靠数值。</p>
+<h3 id="section-18">4.2 查谁占用资源</h3>
+<p><img src="./assets/user-guide/03-cpu-ranking.png" alt="CPU 进程排行" /></p>
+<p><strong>图 7：资源详情样例。</strong> PID、starttime 和名字全部是人为样例，不对应当前机器进程。</p>
+<ol>
+<li>在某资源卡片点击“详情”。</li>
+<li>看表格中的名称、PID、数值、单位和资格提示。</li>
+<li>切换“全部程序／只看 Agent”；Agent 筛选依据已识别的进程名称白名单，不是所有 AI 软件的完整发现。</li>
+<li>UI 排名显示 Top10；采集通常保留整体 Top20 与 Agent Top20 的去重并集，单资源最多约 40 行。</li>
+<li>查不到某进程并不能证明它不存在或没有开销。第三方 HTTP 可以读完整<strong>已缓存</strong>排行，但不会扩大上游采集范围。</li>
+</ol>
+<p>真实资源详情不提供 Session 资源树或按 Session 释放 CPU/GPU 的能力；离线 Demo 的 Session 演示不能用于真实任务。</p>
+<h3 id="section-19">4.3 结束进程：危险操作，和查询完全分开</h3>
+<p><img src="./assets/user-guide/04-cleanup-confirm.png" alt="进程结束确认" /></p>
+<p><strong>图 8：二次确认样例。</strong> 截图只展示确认界面，执行接口被禁止，没有发送信号。</p>
+<p>仅对界面允许选择、且服务端校验通过的非受保护进程使用：</p>
+<ol>
+<li>确认不是必须保留的系统／业务进程，先保存工作。</li>
+<li>勾选目标，点击“清理所选进程”。</li>
+<li>在二次确认中再次核对 PID、身份和进程名称；确认有效期 60 秒。</li>
+<li>确认后由受控链路复核权限、快照与进程身份，再发送 <strong>SIGTERM</strong>。</li>
+<li>逐项读执行结果，再看刷新后的资源；发送成功不保证进程已经退出。</li>
+</ol>
+<p>该操作结束<strong>整个进程</strong>，可能中断任务或丢失未保存数据；不删除日志、缓存或目录，不自动强杀，不自动提高跨用户权限。能否操作其他用户的进程，取决于当前受控服务授权与保护策略，不能仅凭“可清理”标记绕过复核。公共查询 API 不提供它。</p>
+<h2 id="section-20">5. GPU 诊断：把资源、执行状态和结论分开</h2>
+<p>GPU 页面有四类视图：GPU 概览、GPU 诊断、异常事件分析、作业级深度剖析。部分版本页签简称为“作业 Profiling”，以实际页面为准。</p>
+<h3 id="section-21">5.1 GPU 概览</h3>
+<p><img src="./assets/user-guide/07-gpu-overview.png" alt="GPU 概览" /></p>
+<p><strong>图 9：逐卡资源样例。</strong> “NVIDIA 文档样例 GPU”不是当前硬件型号。</p>
+<ul>
+<li>查看索引、名称、UUID、PCI 总线，以及利用率、显存、温度、功率、ECC、PCIe 等实际已采集字段。</li>
+<li>点击“刷新本机 GPU 资源”更新资源；<strong>资源刷新不等于运行原生 AI 诊断</strong>。</li>
+<li>每个字段可能独立缺失：例如 ECC 未取到，应显示不可用，而不是 0。</li>
+<li>无 GPU、驱动／权限受限、尚未采集是不同状态。真实采集模式可保留 GPU 页面解释原因；离线无卡 Demo 可能隐藏入口，不以入口是否存在判定硬件。</li>
+<li>虚拟显示适配器不等于真实计算 GPU。不要把 GPU 资源可用理解为 GX 分析可用。</li>
+</ul>
+<h3 id="section-22">5.2 GPU 诊断</h3>
+<p><img src="./assets/user-guide/08-gpu-diagnosis.png" alt="GPU 检查" /></p>
+<p><strong>图 10：原生 AI 检查结果的样例展示。</strong> 样例为部分覆盖并有风险，不是完整健康结论。</p>
+<ol>
+<li>切换“GPU 诊断”。</li>
+<li>点击“运行 GPU 检查／重新检查 GPU”，等待 sysAK 原生 <code>ai</code> 和本地分析返回。</li>
+<li>先看执行状态：未运行、完成、部分、超时、截断、权限受限或错误。</li>
+<li>再看结果：正常／异常／未知／无 GPU，并核对本次工具检查范围。</li>
+<li>用搜索和 OK／WARN／ERROR 筛选检查项；打开或导出结果时仍保留完整已有证据。</li>
+</ol>
+<p>OK 是某条检查的级别，不表示所有检查完成；WARN 是风险／警告；ERROR 是已返回异常证据。建议不是已经执行的修复。原生 AI 可能写诊断日志，不把实际执行称为严格无副作用读取；<strong>HTTP 查询缓存</strong>才不触发这些执行。</p>
+<h3 id="section-23">5.3 作业级深度剖析</h3>
+<p><img src="./assets/user-guide/09-gpu-jobs.png" alt="GPU 作业证据" /></p>
+<p><strong>图 11：本机作业证据样例。</strong> 实际原生字段可能缺少名字、starttime 或利用率，必须保留不可用标记。</p>
+<p><img src="./assets/user-guide/09b-gpu-job-detail.png" alt="GPU 已返回 PID 详情" /></p>
+<p><strong>图 11 补充：下滚后的进程选择与指标。</strong> 样例特意保留缺失字段，卡级指标不代替进程利用率。</p>
+<ul>
+<li>点击“采集本机作业证据／重新采集本机作业证据”按需运行本机 AI。</li>
+<li>搜索和选择<strong>已经返回的 PID</strong>，查看已有 CPU、RSS、GPU 关联、HANG／NCCL／Xid 等证据。</li>
+<li>选择 PID 只是查看已有结果，不执行输入 PID，也不选择远程实例。</li>
+<li>原生 AI 强依赖 GX；缺少 GX 时分析可能不可用，独立 NVML 资源仍可能取得。</li>
+<li>原生工具当前可能不提供 name 和 starttime：不要将命令行当作进程名，也不能据 PID 确定跨快照身份。</li>
+<li><code>--threshold 1s</code> 是诊断阈值，<strong>不是统一的 1 秒指标采样窗口</strong>；窗口未提供则显示不可用。</li>
+<li>卡级 NVML 利用率不能冒充进程级 SM 利用率。</li>
+<li>尚未实现连续作业 Profiling、完整 CPU/GPU Timeline、Kernel 热点追踪及全作业生命周期分析。</li>
+</ul>
+<h3 id="section-24">5.4 异常事件与离线 Profiling 演示</h3>
+<p><img src="./assets/user-guide/10-gpu-events-demo.png" alt="GPU 事件演示" /></p>
+<p><strong>图 12：内置 GPU 异常案例页面，属于 Demo。</strong></p>
+<ul>
+<li>内置越界、HANG、OOM、通信等案例，用于说明如何组织证据与建议。</li>
+<li>自主分析／报告使用内置案例，不实际调用真实分析或证明当前 GPU 故障。</li>
+<li>离线 Profiling 的实例、区域、正整数 PID、采集范围是演示表单；不会采集输入实例或 PID。</li>
+<li>性能时间线、吞吐／扩展／延迟／显存案例、告警渠道、模拟日报等不要当成真实集群监测或已经接入通知。</li>
+</ul>
+<h2 id="section-25">6. Agent 管家：看元数据，不代替业务诊断</h2>
+<h3 id="section-26">6.1 先区分 API 与真实调用采集</h3>
+<p><img src="./assets/user-guide/11-agent-overview.png" alt="Agent 总览" /></p>
+<p><strong>图 13：紧凑 Agent 页面样例。</strong> 上方统计是报告窗口汇总，中间显示 API 与真实采集状态，下方切换总览／会话／中断／延迟。</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API 可用</td>
+<td>可以向 AgentSight 查询，但可能没有任何调用历史</td>
+</tr>
+<tr>
+<td>采集停用</td>
+<td>未授权／停用了真实采集；历史数据仍可能存在</td>
+</tr>
+<tr>
+<td>采集中</td>
+<td>对应 trace 服务状态正常，不保证所有客户端／TLS／协议都能捕获</td>
+</tr>
+<tr>
+<td>采集失败</td>
+<td>已启用但服务异常，不能把空记录当成健康</td>
+</tr>
+<tr>
+<td>采集不可用／状态未知</td>
+<td>未取得可靠服务状态，应查原因</td>
+</tr>
+</tbody>
+</table>
+<p>首次准备可能要几秒。点击“刷新诊断”会通过独立 AgentSight 获取证据，再由本地 OpenAPI 分析；界面自身没有付费模型调用或自动修复。首次读取没有缓存时可能采集，与公共 HTTP 的 cache-only GET 不同。</p>
+<p>0.2.17 的“数据范围”仅保留统计时间、更新时间和覆盖状态；来源部署与授权说明见 README。下图保留 0.2.15 的“采集详情”旧界面，不作为当前操作入口。报告主要消费五类：进程探活、会话与 Token、中断明细、未处理中断汇总、调用延迟。</p>
+<p><img src="./assets/user-guide/11b-agent-coverage.png" alt="Agent 服务与来源详情" /></p>
+<p><strong>图 13 补充：展开后的来源、覆盖、建议与采集说明。</strong></p>
+<h3 id="section-27">6.2 真实采集授权与隐私</h3>
+<p><strong>新安装入口默认只安装，不开启真实调用采集。</strong> README 中的 <code>--enable-agent-collection</code> 是另行明确接受主机级采集的选项，不是巡检周期按钮。</p>
+<ul>
+<li>eBPF 可能捕获主机进程的明文、参数和会话内容并保存到本地；不是严格的进程隔离。</li>
+<li>当前托管 trace 与 API 是独立服务，仅 trace 使用所需采集 capabilities，包括权限较大的 CAP_SYS_ADMIN；GUI／IDE 不以 root 运行。</li>
+<li>专用 API 使用 7397，原有用户 API 常见为 7396；显式自定义部署优先，不覆盖用户既有配置。</li>
+<li>页面和管家查询接口只暴露已经选择的诊断元数据，<strong>但这不意味着 AgentSight 本地数据库没有原始内容</strong>。</li>
+<li>多用户、敏感或合规受限机器，应在评估采集范围后决定是否授权。不要因“本机”就认定没有隐私风险。</li>
+<li>托管数据库 50 MiB 是周期性清理目标，不是硬配额；WAL、忙锁、空页等可使实际占用超出。默认保留 30 天；管家的任务缓存不是这个数据库。</li>
+</ul>
+<p>具体安装、启停和状态检查按 README 操作；本文不执行授权，不读取用户数据库或配置。</p>
+<h3 id="section-28">6.3 总览：进程和证据覆盖</h3>
+<p>0.2.17 总览前置诊断结论与按类型归组的问题，可跳转只读证据，并提供实测延迟与进程探活。进程支持名称/PID 搜索、角色与状态组合筛选及每页 20 条分页，筛选回第一页；本地交互不追加采集或改变顶部统计。下图保留 0.2.15 的列表样例。</p>
+<p><img src="./assets/user-guide/11c-agent-processes.png" alt="Agent 进程探活" /></p>
+<p><strong>图 13 补充：下滚后的进程列表。</strong> 示例 CLI 没有监听端口，不直接等同异常。</p>
+<ul>
+<li>HTTP 有响应：探测到 HTTP 响应，不保证业务功能完整。</li>
+<li>无监听端口：CLI 可能本来就不提供端口，不能直接判故障。</li>
+<li>响应超时、端口不可达、进程已退出：结合最近检查时间和业务判断。</li>
+<li>可用／不可用／无效／截断是来源状态；截断代表列表未完整返回。</li>
+<li>没有发现项，不等于业务正常。建议只供核查，不会自动重启 Agent 或修复服务。</li>
+</ul>
+<h3 id="section-29">6.4 会话与 Token</h3>
+<p><img src="./assets/user-guide/12-agent-sessions.png" alt="Agent 会话" /></p>
+<p><strong>图 14：两条人工样例会话。</strong> 只有 ID、模型、计数和时间，没有真实对话正文。</p>
+<ol>
+<li>切换“会话”。</li>
+<li>输入 Agent、Session ID 或 Model 搜索当前已采集列表。</li>
+<li>看模型、对话计数、输入／输出 Token、最后活跃时间和关联中断。</li>
+<li>展开行仅看报告已有的关联中断元数据，不读取会话正文。</li>
+<li>需要进一步处理时记录 ID、时间和来源；不要向外部服务上传真实报告。</li>
+</ol>
+<p>顶部 Token／会话统计不随搜索改变；它们以近 24 小时窗口内已有完整来源为准，来源不完整时可能为 <code>—</code>。0.2.17 显式包含辅助调用，输入已含缓存用量，不是会话终身累计；上游未报告 usage 的调用可能未计入，<code>0</code> 仅表示来源记录为零，不能宣称完整消耗。Token 是计数，<strong>不是已经计算出的费用</strong>。目前没有按 Session 准确归属 CPU、GPU、内存，也没有真实 Session 清理。</p>
+<h3 id="section-30">6.5 中断证据</h3>
+<p><img src="./assets/user-guide/13-agent-interruptions.png" alt="Agent 中断列表" /></p>
+<p><img src="./assets/user-guide/14-agent-evidence.png" alt="Agent 中断详情" /></p>
+<p><strong>图 15–16：样例中断和只读证据弹窗。</strong></p>
+<ul>
+<li>在“中断”查看类型、严重度、发生时间、解决标记和关联 Session／Call／PID。</li>
+<li>“查看证据”显示当前报告已有元数据；“查看关联会话”帮助定位，不拉取对话正文。</li>
+<li>类型可包含 Agent 异常退出、模型错误、工具循环风险、SSE 截断、上下文超限、Token 上限、工具错误、用户取消等，只有上游真实返回的类型才有事实含义。</li>
+<li>critical／high／medium／low 是严重度，不是自动修复优先级承诺。</li>
+<li>中断明细最多 200 条未解决记录；总数来自汇总接口，可能比显示条数多。</li>
+<li>当前只读页面不提供真实“标记解决”、重启或修复；示例设备上的恢复按钮属于 Demo。</li>
+</ul>
+<h3 id="section-31">6.6 延迟：等待多久，生成多快</h3>
+<p><img src="./assets/user-guide/15-agent-latency.png" alt="Agent 延迟" /></p>
+<p><strong>图 17：延迟比较样例。</strong> 某字段 <code>—</code> 表示没有该指标，不画成性能为 0。</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>通俗解释</th>
+<th>方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TTFT P95（ms）</td>
+<td>首个 Token 出现前的等待时间的第 95 百分位</td>
+<td>通常越低越好</td>
+</tr>
+<tr>
+<td>E2E P95（ms）</td>
+<td>一次调用总耗时的第 95 百分位</td>
+<td>通常越低越好，但受输出长度影响</td>
+</tr>
+<tr>
+<td>TPS P50（Token/s）</td>
+<td>每秒生成 Token 数的中位数</td>
+<td>通常越高越快</td>
+</tr>
+<tr>
+<td>TPOT P95（ms）</td>
+<td>每个输出 Token 耗时的第 95 百分位</td>
+<td>通常越低越好</td>
+</tr>
+<tr>
+<td>calls／streamingCalls</td>
+<td>已统计调用数／流式调用数</td>
+<td>用于判断样本量，不是质量分数</td>
+</tr>
+</tbody>
+</table>
+<p>P95 不是平均值；P50 是中位数。不同模型、请求长度、样本量及窗口不能直接做公平排名。切换“对比指标”只改变当前图表，不重新采集、不改变窗口。</p>
+<h3 id="section-32">6.7 当前数据范围</h3>
+<p>报告固定使用最近 24 小时的请求窗口，进程最多 256、会话最多 500、未解决中断明细最多 200；延迟列表同样有客户端上限。具体截断、无效及不可用原因以每类 coverage 为准。窗口、时间戳和缓存是不同概念，别把一次结果当成实时全量历史库。</p>
+<h2 id="section-33">7. 设备、部署、日志与公共操作：演示能力说明</h2>
+<h3 id="section-34">7.1 设备管理</h3>
+<p><img src="./assets/user-guide/16-devices-demo.png" alt="设备管理" /></p>
+<p><strong>图 18：设备管理页面。</strong> 本机资源卡片的一部分指标来自当前快照；其他设备、IP、静态硬件和远程状态主要是内置 Demo。</p>
+<ul>
+<li>按“全部设备／GPU 服务器／微主机／Yoga mini”等类型过滤，或用名称／地址搜索。</li>
+<li>“详情／设为当前设备”切换页面展示，不建立远程诊断通道。</li>
+<li>“接入设备”填写名称、类型、地址后“保存演示配置”：保存在当前 React 状态，不连接 SSH、不安装远端 Agent、不形成设备资产库，刷新后可能重置。</li>
+<li>全局搜索支持功能与设备，Ctrl／⌘ K 打开；Esc 关闭弹窗或搜索。</li>
+<li>设置、通知、分析路由、云端摘要许可等界面操作，不等于已接入外部通知、模型或配置平台。配置扫描不在当前集成范围。</li>
+</ul>
+<h3 id="section-35">7.2 研发运维</h3>
+<p><img src="./assets/user-guide/17-ops-demo.png" alt="研发运维演示" /></p>
+<p><strong>图 19：研发运维示例界面。</strong></p>
+<ol>
+<li>选择 IDC／ECS／本地等演示环境。</li>
+<li>点击“开始模拟部署”，核对确认弹窗，再选择“确认模拟部署”。</li>
+<li>查看检查环境、同步应用、启动服务、完成检查等模拟阶段和进度。</li>
+</ol>
+<p>“示例流程完成”只表示演示结束。没有部署真实应用、远程执行、CI/CD 接入、自动改代码、持久检查点或大规模任务调度。</p>
+<h3 id="section-36">7.3 日志分析</h3>
+<p><img src="./assets/user-guide/18-logs-demo.png" alt="日志分析演示" /></p>
+<p><strong>图 20：内置日志与模拟任务。</strong> 不读取本机真实日志文件。</p>
+<ul>
+<li>按 ALL／INFO／WARN／ERROR 和关键词过滤当前内置日志。</li>
+<li>无匹配时显示“没有匹配日志”；清空搜索恢复样例。</li>
+<li>“暂停／继续模拟／重新模拟”控制模拟进度，不控制真实日志采集。</li>
+<li>“查看优化建议”展示页面已有建议，不自动修改业务。</li>
+<li>没有真实日志检索后台、日志导入流水线、索引、告警或历史报告库。公共 HTTP 不把这些 Demo 作为本机真实数据返回。</li>
+</ul>
+<h2 id="section-37">8. 报告与输出：导出的是什么</h2>
+<p><img src="./assets/user-guide/06-health-report.png" alt="体检报告" /></p>
+<p><strong>图 21：当前体检报告弹窗样例。</strong></p>
+<table>
+<thead>
+<tr>
+<th>输出</th>
+<th>内容</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>体检 TXT</td>
+<td>评分范围、资源、项目、证据、建议与采样时间</td>
+<td>进程排行沿用 Top10；缺测保留原因</td>
+</tr>
+<tr>
+<td>GPU HTML</td>
+<td>执行状态、来源、检查覆盖、全部已有检查项；作业报告含已有进程</td>
+<td>不受页面搜索／选择过滤；不是完整 Timeline</td>
+</tr>
+<tr>
+<td>Agent JSON</td>
+<td>已有诊断报告、窗口、覆盖、进程／会话／中断／延迟元数据</td>
+<td>没有对话正文；仍可能含敏感业务标识</td>
+</tr>
+<tr>
+<td>GPU Demo HTML</td>
+<td>内置事件／离线 Profiling 案例与参数</td>
+<td>只能作为示例，不是实测证明</td>
+</tr>
+<tr>
+<td>HTTP report JSON</td>
+<td>Health、摘要、健康文本、Agent 与 GPU 已缓存结果</td>
+<td>JSON 保留完整缓存；无缓存返回明确错误</td>
+</tr>
+</tbody>
+</table>
+<p>桌面使用已有报告保存流程；IDE 弹出保存对话框。导出操作不创建永久报告库；需要历史留存时由使用者保存并管理。分享前检查 PID、模型名、Session ID、时间和其他业务标识，不要附带发现凭据文件。</p>
+<h2 id="section-38">9. 已完成、部分完成、演示与待完成</h2>
+<p>“已完成”指当前实现存在，<strong>不表示所有发行版、硬件、权限和第三方客户端都已验证</strong>。待完成项是当前缺口，不是排期或交付承诺。</p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>状态</th>
+<th>当前可用范围／缺口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>桌面窗口、小管家与 IDE 面板／状态栏</td>
+<td>已完成</td>
+<td>两种宿主；本批次隔离原生验收不等于系统安装或全硬件认证</td>
+</tr>
+<tr>
+<td>本机资源、单位、采样时间、Top10</td>
+<td>已完成，采集有界</td>
+<td>不是全进程／全历史数据库；部分字段可缺测</td>
+</tr>
+<tr>
+<td>巡检启停、1–1440 分钟周期</td>
+<td>已完成</td>
+<td>每宿主独立；退出停止本实例巡检</td>
+</tr>
+<tr>
+<td>分数、覆盖提示、TXT 报告</td>
+<td>已完成</td>
+<td>只说明当前证据；不是完整健康认证</td>
+</tr>
+<tr>
+<td>根分区／目录、FD、内存体检</td>
+<td>部分完成／覆盖受限</td>
+<td>有真实链路，扫描和插件不能保证完整覆盖</td>
+</tr>
+<tr>
+<td>首页 Agent、日志、网络、I/O 诊断</td>
+<td>尚有待完成部分</td>
+<td>不用独立 Agent 页结果假装首页全接入</td>
+</tr>
+<tr>
+<td>GPU 逐卡资源</td>
+<td>已完成，硬件相关</td>
+<td>依赖实际支持的硬件、驱动和采集字段</td>
+</tr>
+<tr>
+<td>sysAK 原生 AI GPU 检查</td>
+<td>已接入，证据受限</td>
+<td>按需执行；GX 等缺失、超时和日志写入需如实说明</td>
+</tr>
+<tr>
+<td>作业 PID 与原生异常证据</td>
+<td>部分完成</td>
+<td>缺 name／starttime／采样窗口时不补造</td>
+</tr>
+<tr>
+<td>连续 Profiling、Timeline、Kernel 热点</td>
+<td>待完成</td>
+<td>当前真实页仅已有原生证据；离线案例不算实现</td>
+</tr>
+<tr>
+<td>GPU 事件案例／离线 Profiling／告警渠道</td>
+<td>Demo</td>
+<td>不实际采集远程实例或接入通知</td>
+</tr>
+<tr>
+<td>AgentSight 独立部署／五类元数据诊断</td>
+<td>已完成链路，来源有界</td>
+<td>API 和 trace 独立；并非所有调用都支持</td>
+</tr>
+<tr>
+<td>真实调用 trace/API 受控服务</td>
+<td>已实现，可选授权</td>
+<td>主机级隐私风险；清理目标非硬磁盘配额</td>
+</tr>
+<tr>
+<td>Agent 自动修复、真实重启／标记解决</td>
+<td>待完成</td>
+<td>建议只读；示例恢复流程为 Demo</td>
+</tr>
+<tr>
+<td>Session 真实资源归属与清理</td>
+<td>待完成</td>
+<td>不按 Session 拆 CPU/GPU，也不清真实会话</td>
+</tr>
+<tr>
+<td>受控进程结束</td>
+<td>已完成受控流程</td>
+<td>身份权限复核、二次确认、SIGTERM；不保证退出、不删文件</td>
+</tr>
+<tr>
+<td>远程设备接入／资产库</td>
+<td>Demo／待真实接入</td>
+<td>当前设备添加仅本地界面状态</td>
+</tr>
+<tr>
+<td>真实部署／日志平台／配置扫描</td>
+<td>未实现或不在当前范围</td>
+<td>部署、日志界面为 Demo；不恢复 confscan 集成</td>
+</tr>
+<tr>
+<td>本机只读 HTTP 与 15 数据集</td>
+<td>源码已完成</td>
+<td>安装件需实查发现文件和能力；旧包不会自动更新</td>
+</tr>
+<tr>
+<td>持久化资源历史／任务库／报告库</td>
+<td>待完成</td>
+<td>管家缓存跟随宿主；不与 AgentSight 本地数据库混淆</td>
+</tr>
+</tbody>
+</table>
+<h3 id="section-39">验证范围说明</h3>
+<ul>
+<li>本文名称、版本和操作说明对应 SysAgent 0.2.17；双端构建成功，隔离 AppImage 原生验收 30/30、IDE 原生验收 24/24 通过，涵盖本地时间显示、刷新失败保留旧结果、分页与窄屏；全量回归及最终发布包校验结果见根 README，旧版本数量和哈希不是 0.2.17 结果。</li>
+<li>配图保留改名前 0.2.15 共享 React 页面和人工夹具的展示／导航，包括只读确认样例；该次截图没有 root 执行、真实 GPU 检查、用户会话读取、信号或外部请求，旧品牌与时间格式不代表当前显示。</li>
+<li>文档阅读版重新生成并检查 26 张图片、链接与桌面／手机布局；本批次同时重新打包并隔离验收原生 Electron／IDE 外壳，不安装／升级系统服务，不改变采集授权，不发起模型调用；未认证全部真实正向硬件链路。</li>
+<li>查询 API 的实现与测试记录见专项文档；检查正在使用的实例是否真正开放接口，再决定对接，不能单看版本号。</li>
+</ul>
+<h2 id="section-40">10. 第三方程序怎样对接</h2>
+<h3 id="section-41">10.1 推荐：本机只读 HTTP，不抓网页 DOM</h3>
+<p>第三方应用应读取稳定的 JSON 数据和能力目录，不解析页面文字，也不直接使用 UI 的内部 IPC 或 root socket。HTTP／JSON 方便 Python、curl、Node、Go 等接入；特权执行仍保留 Linux socket 边界。</p>
+<p><img src="./assets/user-guide/api-flow.svg" alt="第三方查询接入流程" /></p>
+<p><strong>图 22：本机接入流程。</strong> GET 只读缓存；需要新证据应在管家相应页面运行刷新或诊断，不把轮询接口当成执行入口。</p>
+<h3 id="section-42">10.2 发现地址与认证</h3>
+<p>桌面控制器和 IDE 扩展激活时各自启动随机回环端口，并创建：</p>
+<pre><code class="language-text">宿主用户存储目录 / local-api / &lt;instance UUID&gt;.json
+</code></pre>
+<ul>
+<li>桌面根目录来自 Electron <code>app.getPath('userData')</code>。</li>
+<li>IDE 根目录来自 <code>context.globalStorageUri</code>，扩展 ID 为 <code>sysagent-local.sysagent-ide</code>。</li>
+<li>文件包括 <code>base_url</code>、<code>token</code>、<code>instance_id</code>、<code>host_kind</code>、<code>device_id</code>、进程与启动时间；目录 0700、文件 0600。</li>
+<li>以当前用户选择实际发现文件；不硬编码端口或产品配置目录，不批量扫描其他用户。</li>
+<li>使用文件中的 <code>127.0.0.1</code> 地址和 <code>Authorization: Bearer …</code>；不要替换成 <code>localhost</code>、附 Origin，或开启跨域代理绕过校验。</li>
+<li>不打印／提交／上传 token，不放进 URL、进程命令行或公开日志。查询 token 和内部分析 token 不同。</li>
+<li>不安全目录／符号链接会导致查询启动失败，不自动修改权限。控制器的 <code>query_api.error</code> 可提供状态；原有采集不因此必然失败。</li>
+<li>正常关闭删除本实例文件；崩溃可能留下旧文件。客户端必须验证连通性及 instance，重启后重新发现。</li>
+</ul>
+<h3 id="section-43">10.3 八类路径与 15 个数据集</h3>
+<p>所有路径只允许认证 <strong>GET</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>返回内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/api/v1/status</code></td>
+<td>安装、启停、阶段、周期、最近任务与错误</td>
+</tr>
+<tr>
+<td><code>/api/v1/capabilities</code></td>
+<td>数据集目录、合法字段、缓存状态、限制、未开放功能</td>
+</tr>
+<tr>
+<td><code>/api/v1/snapshot</code></td>
+<td>一次一致读取 status、Health state、Agent report、tasks</td>
+</tr>
+<tr>
+<td><code>/api/v1/summary</code></td>
+<td>同 UI 的评分与未知／不可用范围</td>
+</tr>
+<tr>
+<td><code>/api/v1/report</code></td>
+<td>Health、摘要、文本、Agent 和 GPU 结构化报告</td>
+</tr>
+<tr>
+<td><code>/api/v1/datasets/{name}</code></td>
+<td>列表筛选、排序、字段投影和分页</td>
+</tr>
+<tr>
+<td><code>/api/v1/datasets/{name}/{id}</code></td>
+<td>缓存对象详情，ID 整体编码一次</td>
+</tr>
+<tr>
+<td><code>/api/v1/openapi.json</code></td>
+<td>OpenAPI 3.1 契约，不是内部写契约</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>包含什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>resources</code></td>
+<td>各资源完整已有快照与逐资源状态</td>
+</tr>
+<tr>
+<td><code>resource-rows</code></td>
+<td>完整已缓存进程排行、单位、身份和 Agent 识别</td>
+</tr>
+<tr>
+<td><code>inspections</code></td>
+<td>体检项目、执行范围、结论与证据</td>
+</tr>
+<tr>
+<td><code>optimizations</code></td>
+<td>当前已有建议，不表示自动修复已实现</td>
+</tr>
+<tr>
+<td><code>operations</code></td>
+<td>本实例最近操作，最多 30 条</td>
+</tr>
+<tr>
+<td><code>gpu-devices</code></td>
+<td>逐卡资源遥测</td>
+</tr>
+<tr>
+<td><code>gpu-findings</code></td>
+<td>GPU 原生检查项、级别、证据与建议</td>
+</tr>
+<tr>
+<td><code>gpu-jobs</code></td>
+<td>已返回作业 PID 和原生进程证据</td>
+</tr>
+<tr>
+<td><code>agent-processes</code></td>
+<td>AgentSight 进程探活；没有可靠 starttime</td>
+</tr>
+<tr>
+<td><code>agent-sessions</code></td>
+<td>模型、计数、Token、首末时间，没有对话正文</td>
+</tr>
+<tr>
+<td><code>agent-interruptions</code></td>
+<td>已选择的中断元数据</td>
+</tr>
+<tr>
+<td><code>agent-latency</code></td>
+<td>调用数、TTFT、E2E、TPS、TPOT</td>
+</tr>
+<tr>
+<td><code>agent-findings</code></td>
+<td>独立 Agent 发现与建议</td>
+</tr>
+<tr>
+<td><code>agent-coverage</code></td>
+<td>五类来源状态与受限原因</td>
+</tr>
+<tr>
+<td><code>tasks</code></td>
+<td>本进程最多 100 条成功采集／诊断任务元数据</td>
+</tr>
+</tbody>
+</table>
+<p>公共接口没有 <code>/api/v1/resources</code> 快捷路由，没有 POST 刷新、结束进程、修复、配置修改、任意文件读取或任意 AgentSight 路径代理。</p>
+<h3 id="section-44">10.4 返回结构与关键字段</h3>
+<p>非数据集接口通常返回：</p>
+<pre><code class="language-json">{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;meta&quot;: {
+    &quot;instance_id&quot;: &quot;说明性实例标识&quot;,
+    &quot;host_kind&quot;: &quot;electron&quot;,
+    &quot;device_id&quot;: &quot;说明性设备标识&quot;,
+    &quot;revision&quot;: 12,
+    &quot;sampled_at&quot;: &quot;2026-11-12T08:00:00Z&quot;,
+    &quot;agent_sampled_at&quot;: null,
+    &quot;cache_only&quot;: true
+  },
+  &quot;data&quot;: {}
+}
+</code></pre>
+<p>这是结构示意，不是一次实测响应；<code>data</code> 按路径不同。snapshot 的 <code>data</code> 为 <code>{status, state, agent, tasks}</code>；state／agent 可以为 <code>null</code>。OpenAPI 路径直接返回契约。</p>
+<p>数据集列表直接返回 <code>{schema_version, dataset, meta, total, offset, limit, items, next_offset}</code>，<strong>不再套一层 <code>data</code></strong>；详情直接返回 <code>item</code> 与元信息。准确 Schema 以服务的 OpenAPI 为准。</p>
+<ul>
+<li><code>revision</code> 只标记 Health 快照；Agent 有独立时间和请求窗口。</li>
+<li><code>total</code> 是筛选后<strong>缓存</strong>条数，不是全机／上游总量。</li>
+<li><code>next_offset</code> 为下一页位置或 null。</li>
+<li><code>status</code>、coverage 和 reason 必须保留，不能把空值转换为正常或 0。</li>
+<li>外层 <code>mode: &quot;mock&quot;</code> 是既有部署标签；应同时检查 state 的 <code>mode: &quot;collected&quot;</code>、任务 <code>simulated: false</code>、来源、时间与覆盖。不仅凭一个词判断数据真实性。</li>
+</ul>
+<h3 id="section-45">10.5 查询参数</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>例子</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>filter.&lt;field&gt;</code></td>
+<td><code>filter.resource=cpu</code></td>
+<td>精确匹配；同字段多值 OR，不同字段 AND；标量数组按包含匹配</td>
+</tr>
+<tr>
+<td><code>min.&lt;field&gt;</code>／<code>max.&lt;field&gt;</code></td>
+<td><code>min.usage=10</code></td>
+<td>合法数字或 ISO 时间的含端点范围</td>
+</tr>
+<tr>
+<td><code>q</code></td>
+<td><code>q=qoder</code></td>
+<td>缓存文本子串检索，不执行正则、表达式或 SQL</td>
+</tr>
+<tr>
+<td><code>sort</code></td>
+<td><code>sort=-usage,pid</code></td>
+<td>多字段排序，<code>-</code> 为降序，缺失值在后</td>
+</tr>
+<tr>
+<td><code>fields</code></td>
+<td><code>fields=queryId,name,pid,usage</code></td>
+<td>合法字段投影，未填返回完整允许对象</td>
+</tr>
+<tr>
+<td><code>offset</code>／<code>limit</code></td>
+<td><code>offset=0&amp;limit=100</code></td>
+<td>默认 0／100；每页 1–1000</td>
+</tr>
+<tr>
+<td><code>revision</code></td>
+<td><code>revision=12</code></td>
+<td>Health 版本一致性条件，不匹配 409</td>
+</tr>
+</tbody>
+</table>
+<p>合法字段先查 capabilities；未知／重复／重叠投影或非法查询拒绝。详情只支持 fields 与 revision；status、snapshot、summary、report 等不支持附带列表参数。</p>
+<p>资源行详情优先使用 <code>queryId</code>（资源名 + 原始 ID），避免不同资源复用 ID。进程身份只有 PID 不足够，有可靠 starttime 时需联合核对；原生 GPU／Agent 来源缺 starttime 时合成 ID 只在当前快照使用。</p>
+<h3 id="section-46">10.6 Python：读 CPU 排行并查询详情</h3>
+<p>在自己的运行环境中将 <code>SYSOM_QUERY_DISCOVERY</code> 设置为选定实例的<strong>真实发现文件绝对路径</strong>。示例只读取该文件与查询结果，不打印凭据。</p>
+<pre><code class="language-python">import json
+import os
+from urllib.parse import urlencode, quote
+from urllib.request import Request, urlopen
+
+with open(os.environ['SYSOM_QUERY_DISCOVERY'], encoding='utf-8') as file:
+    endpoint = json.load(file)
+
+
+def get(route, params=None):
+    url = endpoint['base_url'] + route
+    if params:
+        url += '?' + urlencode(params)
+    request = Request(url, headers={
+        'Authorization': 'Bearer ' + endpoint['token'],
+    })
+    with urlopen(request, timeout=5) as response:
+        return json.load(response)
+
+
+catalog = get('/api/v1/capabilities')
+snapshot = get('/api/v1/snapshot')
+revision = snapshot['meta']['revision']
+rows = get('/api/v1/datasets/resource-rows', {
+    'filter.resource': 'cpu',
+    'sort': '-usage,pid',
+    'fields': 'queryId,resource,name,pid,starttime,usage',
+    'limit': 100,
+    **({'revision': revision} if revision is not None else {}),
+})
+print(json.dumps(rows, ensure_ascii=False, indent=2))
+if rows['items']:
+    identity = quote(rows['items'][0]['queryId'], safe='')
+    detail = get('/api/v1/datasets/resource-rows/' + identity,
+                 {'revision': revision} if revision is not None else None)
+    print(json.dumps(detail, ensure_ascii=False, indent=2))
+</code></pre>
+<p>无缓存或版本变化时此最小示例会抛出 HTTP 错误，不静默填假数据。正式客户端应按下面的错误码处理；列表跨页核对同一 Health revision，Agent 跨页另核对采样时间／窗口，发生变化重新查询。</p>
+<h3 id="section-47">10.7 curl：凭据不要放命令行</h3>
+<p>凭据通过 stdin 进入 curl 配置；不要加 <code>-v</code> 打印敏感请求头：</p>
+<pre><code class="language-bash">python3 - &lt;&lt;'PY' | curl --silent --show-error --fail --config -
+import json, os
+with open(os.environ['SYSOM_QUERY_DISCOVERY'], encoding='utf-8') as file:
+    endpoint = json.load(file)
+print('url = ' + json.dumps(endpoint['base_url'] + '/api/v1/snapshot'))
+print('header = ' + json.dumps('Authorization: Bearer ' + endpoint['token']))
+PY
+</code></pre>
+<h3 id="section-48">10.8 错误怎样处理</h3>
+<p>错误形如 <code>{schema_version: &quot;1.0&quot;, error: {code, message}}</code>。</p>
+<table>
+<thead>
+<tr>
+<th>HTTP</th>
+<th>常见原因</th>
+<th>客户端应做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td>参数／字段／路径不合法</td>
+<td>对照 capabilities 和契约修正</td>
+</tr>
+<tr>
+<td>401</td>
+<td>查询凭据缺失或错误</td>
+<td>重新选择并读取自己的活跃发现文件，不打印 token</td>
+</tr>
+<tr>
+<td>403</td>
+<td>Host／Origin 等边界不符合</td>
+<td>使用原始回环地址，别从浏览器直连或绕过限制</td>
+</tr>
+<tr>
+<td>404</td>
+<td>路由、数据集或 ID 不存在</td>
+<td>查目录；ID 可能只属于旧快照</td>
+</tr>
+<tr>
+<td>405</td>
+<td>请求不是 GET</td>
+<td>不重试写入，改用只读接口</td>
+</tr>
+<tr>
+<td>409</td>
+<td>revision 变化或详情身份歧义</td>
+<td>重新取得一致快照和正确 detail ID</td>
+</tr>
+<tr>
+<td>503</td>
+<td>所需缓存尚不存在／来源未就绪</td>
+<td>在界面获取相应证据；查询不会替你采集</td>
+</tr>
+<tr>
+<td>连接失败</td>
+<td>宿主已退出或文件过期</td>
+<td>重新发现活跃实例，不凭文件存在判断存活</td>
+</tr>
+</tbody>
+</table>
+<p>已有“部分／不可用”的对象可能以成功响应返回，因为状态本身就是查询结果；HTTP 200 不能代替业务状态判断。</p>
+<h2 id="section-49">11. 代码结构与扩展接入</h2>
+<h3 id="section-50">11.1 在哪里改什么</h3>
+<p>以下路径均以项目 <code>sysom_idc/</code> 为根，不是旧 Demo 的目录结构。</p>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/App.tsx</code></td>
+<td>导航、设备、日志、运维、公共弹窗</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/DesktopDemo.tsx</code></td>
+<td>主页、小管家、缓存轮询与告警展示；名字保留历史，不能据名字判 Demo</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/HealthGuardPage.tsx</code></td>
+<td>资源、体检、报告、进程确认</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/CollectionStatus.tsx</code></td>
+<td>巡检配置与周期输入</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/ResourceRankings.tsx</code></td>
+<td>真实 Top10／Agent 筛选与独立 Demo Session 展示</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/GpuDiagnostics.tsx</code></td>
+<td>GPU 概览、检查、原生作业证据、Demo 事件／Profiling</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/AgentDiagnostics.tsx</code></td>
+<td>本机只读 Agent 视图与独立示例视图</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/health-data.ts</code></td>
+<td>资源／体检模型、评分与 TXT 报告</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/agent-diagnostics-data.ts</code></td>
+<td>Agent 元数据类型、来源与状态标签</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/src/idc-client.ts</code></td>
+<td>UI 到宿主 IPC／Webview 或开发 HTTP 的调用</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/main.cjs</code>／<code>preload.cjs</code></td>
+<td>桌面窗口、生命周期、严格 IPC 桥接</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-ide-extension/src/extension.ts</code></td>
+<td>IDE 扩展激活、状态栏、RPC、报告保存与查询启动</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/idc-controller.cjs</code></td>
+<td>采集调度、缓存、独立 Agent 诊断、任务与受控操作</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/local-query-api.cjs</code></td>
+<td>公共本机只读 HTTP、认证、发现与生命周期</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/query-data.cjs</code></td>
+<td>15 数据集、静态字段白名单、查询规则与契约</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/openapi-service.ts</code>／<code>collected-state.ts</code></td>
+<td>内部证据规范化、真实资源解析与报告函数导出</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/generated/openapi.cjs</code></td>
+<td>既有构建生成的共享 CommonJS；不要手改</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/agentsight-client.cjs</code>／<code>agentsight-deployment.cjs</code></td>
+<td>选择性元数据获取、独立配套准备、受控服务启动</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/electron/sysak-root.cjs</code>／<code>build/sysak-root-runner.py</code></td>
+<td>固定 root 安装验证与 socket 执行边界</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/tests/</code>／<code>sysagent-ide-extension/test/</code></td>
+<td>模型、解析、权限、HTTP 和宿主验收</td>
+</tr>
+<tr>
+<td><code>sysom_idc/sysagent-idc/backend/</code></td>
+<td>未接入当前前端的历史 FastAPI 骨架，不能当作真实查询入口</td>
+</tr>
+</tbody>
+</table>
+<h3 id="section-51">11.2 新增一种查询数据的正确方向</h3>
+<ol>
+<li>先确定真实来源和保留范围：哪些是零、未知、不可用、截断；是否涉及隐私。</li>
+<li>在数据模型／解析中形成结构化结果，保留来源、时间和覆盖，不直接把任意文件或原始会话公开。</li>
+<li>在控制器保留明确缓存，通过同步 <code>queryView()</code> 读取副本；<strong>不要在 GET 路由调用可能采集的 snapshot／agentSnapshot</strong>。</li>
+<li>在 <code>query-data.cjs</code> 声明字段白名单、身份、过滤／排序／范围规则和 OpenAPI Schema。</li>
+<li>UI 和 HTTP 复用已有业务模型；执行动作走另行评审的受控链路，不混入查询接口。</li>
+<li>增加无缓存、部分证据、身份变化、分页、非法参数、认证、安全边界和契约一致性测试。</li>
+</ol>
+<p>内部 <code>/openapi/v1/collections</code> 和 <code>/openapi/v1/agent-diagnostics</code> 用于证据分析／规范化，不是第三方公开写入口；不提供其 token，也不直接代理。AgentSight 只消费明确允许的五类路径，不开放通用路径穿透。</p>
+<h3 id="section-52">11.3 开发与构建入口</h3>
+<p>已具备依赖时，在各项目目录执行：</p>
+<pre><code class="language-bash"># sysom_idc/sysagent-idc
+npm run build
+npm test
+
+# sysom_idc/sysagent-ide-extension
+npm run typecheck
+npm run build
+</code></pre>
+<p>桌面 build 先生成共享 OpenAPI，再做 TypeScript 和 Vite 构建；IDE 复用模型并打包宿主／Webview。安装用户不需要开发工具，也不需要启动历史 FastAPI。开发命令可能运行真实采集服务，不能把普通 Vite 开发入口当成完全隔离的演示环境。</p>
+<p>本文截图脚本位于 <code>sysom_idc/docs/scripts/capture-user-guide.cjs</code>：仅载入当前 React 源码，不加载采集插件，注入人工样例，阻止外部请求与真实执行。需要已存在的项目 Node 依赖、本机 Chrome 和沙箱可用；不安装额外软件，不用 <code>--no-sandbox</code>。截图来源与结果记录在<a href="./assets/user-guide/capture-manifest.json">截图清单</a>。</p>
+<h2 id="section-53">12. 常见疑问速查</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>答案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>为什么有高分还有“未检查”？</td>
+<td>分数只描述当前可评分证据，未知不等于正常。</td>
+</tr>
+<tr>
+<td>为什么磁盘空间和排行看起来不对应？</td>
+<td>首页是空间容量；排行是进程 B/s I/O，二者不是同一个量。</td>
+</tr>
+<tr>
+<td>为什么 Agent API 可用但没有会话？</td>
+<td>API 本身不生成历史；trace 可能未启用、失败或没捕获支持的调用。</td>
+</tr>
+<tr>
+<td>为什么停止 trace 后还能查到数据？</td>
+<td>停止采集不删除已有历史；报告应按时间和窗口理解。</td>
+</tr>
+<tr>
+<td>为什么 GPU 资源有值、AI 却不可用？</td>
+<td>NVML／资源来源与原生 GX 分析是不同能力。</td>
+</tr>
+<tr>
+<td>为什么点击 PID 不能深度追踪该进程？</td>
+<td>当前只选择已有证据；连续 Timeline 和指定 PID 采集未实现。</td>
+</tr>
+<tr>
+<td>为什么 HTTP GET 后数据没变？</td>
+<td>接口只读缓存，不采集；须用管家刷新／诊断或等待已有巡检。</td>
+</tr>
+<tr>
+<td>为什么重启后 HTTP 端口变化／任务为空？</td>
+<td>每实例随机端口；管家缓存不是持久化历史库。</td>
+</tr>
+<tr>
+<td>为什么浏览器网页访问接口失败？</td>
+<td>有意拒绝 Origin，不开放 CORS；用本机受信程序，不绕过边界。</td>
+</tr>
+<tr>
+<td>为什么关闭主页应用还在？</td>
+<td>收起到悬浮小管家；彻底退出使用右键“退出”。</td>
+</tr>
+<tr>
+<td>如何确认安装件真的有新接口？</td>
+<td>查该宿主实际发现文件与 capabilities；不要只凭源码或版本号。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="section-54">进一步阅读</h3>
+<ul>
+<li><a href="../README.md">当前发布、安装与服务授权</a></li>
+<li><a href="./LOCAL-HTTP-API.md">本机只读 HTTP 参数、安全约束及测试记录</a></li>
+<li><a href="./SYSAGENT-IDC-OPENAPI-DETAILED-DESIGN.md">系统采集与内部 OpenAPI 设计</a></li>
+<li><a href="./DEVELOPMENT.md">开发文档</a>：包含历史 Demo 段落，请以当前源码与本文的真实／演示边界为准。</li>
+</ul>
+</main></div></body></html>

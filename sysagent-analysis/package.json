@@ -1,0 +1,16 @@
+{
+  "name": "sysagent-analysis",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bundle.js",
+  "scripts": {
+    "capture:app": "node tests/capture-app.cjs",
+    "verify:package": "node tests/verify-package.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}

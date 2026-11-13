@@ -1,0 +1,32 @@
+[Unit]
+Description=SysAgent AgentSight opt-in host content tracing
+ConditionPathExists=/etc/sysom-agentsight/consent.json
+After=local-fs.target
+
+[Service]
+Type=simple
+# Missing numeric enrollment drop-in must prevent service startup.
+User=sysom-agentsight-unenrolled
+Group=sysom-agentsight-unenrolled
+ExecStartPre=+/usr/bin/python3 -I /usr/share/sysom/agentsight-runtime/agentsight-collection.py verify
+ExecStart=/usr/share/sysom/agentsight-runtime/agentsight trace --config /etc/sysom-agentsight/config.json
+# Ubuntu perf_event_paranoid=4 requires CAP_SYS_ADMIN for tracepoint attachment.
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+NoNewPrivileges=yes
+LimitMEMLOCK=infinity
+UMask=0077
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# Blocks this process's exporter/metadata traffic, NOT host eBPF probes.
+IPAddressDeny=any
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

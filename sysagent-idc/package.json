@@ -1,0 +1,111 @@
+{
+  "name": "sysagent-idc",
+  "version": "0.2.17",
+  "private": true,
+  "license": "MIT",
+  "description": "SysAgent管家 - 本地 AI 工作站智能运维桌面应用",
+  "homepage": "sysom://app/index.html",
+  "author": {
+    "name": "Local demo build",
+    "email": "noreply@localhost"
+  },
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "npm run build:openapi && concurrently -k \"vite\" \"wait-on tcp:127.0.0.1:5173 && electron .\"",
+    "dev:web": "vite",
+    "build": "npm run build:openapi && tsc -b && vite build",
+    "prepare:sysak": "node scripts/prepare-sysak.cjs",
+    "package:agentsight": "node scripts/package-agentsight.cjs",
+    "build:openapi": "node scripts/build-openapi.cjs",
+    "verify:sysak": "node scripts/prepare-sysak.cjs --verify",
+    "icon": "node build/make-icon.cjs",
+    "build:electron": "npm run verify:sysak && npm run build && electron-builder",
+    "build:deb": "npm run verify:sysak && npm run build && electron-builder --linux deb --publish never",
+    "build:electron:mirror": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ npm run build:electron",
+    "preview": "vite preview",
+    "backend": "backend/.venv/bin/python -m uvicorn app.main:app --reload --app-dir backend --port 8787",
+    "backend:setup": "python3 -m venv backend/.venv && backend/.venv/bin/pip install -r backend/requirements.txt",
+    "test": "node --test tests/*.test.cjs",
+    "build:html": "node scripts/build-html.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.sysagent.idc",
+    "productName": "SysAgent管家",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES",
+      "FONT_LICENSE"
+    ],
+    "afterPack": "./build/after-pack.cjs",
+    "extraResources": [
+      {
+        "from": "resources/sysak",
+        "to": "sysak",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/sysak-root-runner.py",
+        "to": "sysak-root-runner.py"
+      },
+      {
+        "from": "build/sysom-idc.service",
+        "to": "sysom-idc.service"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "icon": "build/icons",
+      "desktop": {
+        "StartupWMClass": "sysagent-idc"
+      }
+    },
+    "deb": {
+      "afterInstall": "build/after-install.sh",
+      "afterRemove": "build/after-remove.sh",
+      "depends": [
+        "sysom-agentsight-runtime (= 0.16.0)",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "python3",
+        "coreutils",
+        "systemd"
+      ]
+    }
+  }
+}

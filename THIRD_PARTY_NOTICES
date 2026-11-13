@@ -1,0 +1,117 @@
+SysAgent third-party notices
+
+Scope
+-----
+The project MIT license applies to original material that SysAgent contributors
+are entitled to license. It does not replace third-party copyrights or terms.
+Fonts and dependency code retain their own licenses. Dependency versions and
+license identifiers are recorded in the package-lock.json files; inspect the
+actual dependency distributions and preserve their notices when redistributing
+a build. This file covers React, React DOM, Lucide and the bundled Noto Sans SC
+fonts, not every possible build-tool or native dependency.
+
+The source export excludes reference demo HTML, extracted reference bundles,
+archives, installed node_modules, validation data and the AgentSight build
+cache. Generated release packages are kept in Git-ignored release directories.
+
+Prebuilt Linux x64 SysAK and AgentSight inputs are included under vendor/ with
+the maintainer's authorization for binary redistribution. Build scripts stage
+and validate these inputs; they do not compile SysAK or AgentSight from source.
+That authorization does not replace upstream copyrights, licenses or notices,
+and the project MIT license does not relicense those native components.
+
+Retained UI, data and styles include material ported from a reference demo.
+The permission record for that reference and its derivatives has not been
+established by this review. Excluding extracted bundles does not establish
+rights in retained derivatives; confirm them before publishing the source.
+
+SysAK remains an external native dependency. Its local build provenance and
+component license inventory must be established before distributing a native
+bundle. Do not assume the top-level SysAgent MIT license covers SysAK.
+
+AgentSight remains an external service. Inspected sources include Apache-2.0
+project code, LGPL-2.1 OR BSD-2-Clause eBPF sources, and a separate GPL-2.0-only
+source file whose inclusion in the release binary was not established.
+Embedded eBPF objects declare GPL; that marker alone does not establish a
+GPL-only source license. Determine the applicable redistribution route,
+preserve its notices and fulfill any corresponding-source obligations before
+distributing the runtime. The source/build cache is not included here.
+
+The inspected AppImage also bundles desktop libraries without a complete
+per-library license inventory. Establish their terms and satisfy applicable
+notice and source obligations, including LGPL requirements where applicable.
+Native binaries retain local build-path references that require review.
+
+React and React DOM
+-------------------
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Lucide
+------
+ISC License
+
+Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Feather portions of Lucide
+-------------------------
+MIT License
+
+Copyright (c) 2013-2022 Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Noto Sans SC fonts
+------------------
+Bundled files: sysagent-idc/src/assets/fonts/*.woff2
+License: SIL Open Font License 1.1, not MIT.
+(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+The complete license and preserved copyright notice are in FONT_LICENSE.
+The font source directory also contains OFL.txt.

@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""resource_anomaly - Extensible system resource anomaly diagnosis.
+
+Usage:
+    sysak resource_anomaly [GLOBAL OPTIONS] --run <DIAGNOSTIC> [ARGS...] [--run <DIAGNOSTIC> [ARGS...]]
+    sysak resource_anomaly --all
+    sysak resource_anomaly --list
+    sysak resource_anomaly --help
+
+Global Options:
+    -j, --json       Output all results as JSON
+    -o, --output FILE   Write aggregated report to file
+    --all            Run all diagnostics with sensible defaults
+    --list           List available diagnostics
+    --help           Show this help
+
+Examples:
+    sysak resource_anomaly --all
+    sysak resource_anomaly --run fdleak -c
+    sysak resource_anomaly --run fdleak -c -p 1234
+    sysak resource_anomaly -j --run fdleak -c --run memcgoffline -s -f 5
+"""
+
+from __future__ import print_function
+
+import sys
+
+# Safe dispatch must precede diagnostic discovery and the legacy root gate.
+def _safe_dispatch(argv):
+    if any(arg == "--fd-usage" or arg.startswith("--fd-usage=") for arg in argv):
+        sys.dont_write_bytecode = True
+        from resource_anomaly_idc import main_fd_usage
+        return main_fd_usage(argv)
+    if any(arg == "--idc" or arg.startswith("--idc=") for arg in argv):
+        sys.dont_write_bytecode = True
+        from resource_anomaly_idc import main as idc_main
+        return idc_main(argv)
+    return None
+
+
+if __name__ == "__main__":
+    _safe_exit = _safe_dispatch(sys.argv[1:])
+    if _safe_exit is not None:
+        sys.exit(_safe_exit)
+
+import argparse
+import codecs
+import json
+import os
+import signal
+import sys
+
+# Ensure this script's directory is in sys.path so diagnostics package is importable
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+
+from diagnostics import get_diagnostic, list_diagnostics, get_all_diagnostics
+
+
+def _ensure_utf8_stdout():
+    """Force stdout/stderr to UTF-8 to prevent UnicodeEncodeError in ASCII locales.
+
+    When sysak dispatches this tool, LANG is often unset (or C), causing
+    sys.stdout.encoding to be 'ascii'. Diagnostics like diskscanner produce
+    Chinese output that cannot be encoded to ASCII.
+    """
+    if hasattr(sys.stdout, 'reconfigure'):
+        # Python 3.7+
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    elif hasattr(sys.stdout, 'buffer'):
+        # Python 3.x < 3.7
+        import io
+        if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding='utf-8', errors='replace',
+                line_buffering=True)
+            sys.stderr = io.TextIOWrapper(
+                sys.stderr.buffer, encoding='utf-8', errors='replace',
+                line_buffering=True)
+    else:
+        # Python 2 fallback
+        import codecs as _codecs
+        if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+            sys.stdout = _codecs.getwriter('utf-8')(sys.stdout, errors='replace')
+            sys.stderr = _codecs.getwriter('utf-8')(sys.stderr, errors='replace')
+
+
+USAGE_TEXT = """\
+resource_anomaly - Extensible system resource anomaly diagnosis
+
+Usage:
+  sysak resource_anomaly [GLOBAL OPTIONS] --run <DIAG> [ARGS...] [--run <DIAG> [ARGS...]]
+  sysak resource_anomaly --all
+
+Global Options:
+  -j, --json          Output all results as JSON
+  -o, --output FILE   Write aggregated report to file
+  --all               Run all diagnostics with sensible defaults
+  --list              List available diagnostics and exit
+  --help              Show this help and exit
+
+Examples:
+  sysak resource_anomaly --all
+  sysak resource_anomaly --all -j -o /tmp/report.json
+  sysak resource_anomaly --run fdleak -c
+  sysak resource_anomaly --run fdleak --fd-usage
+  sysak resource_anomaly --run fdleak -c -j -p 1234
+  sysak resource_anomaly -j --run fdleak -c --run memcgoffline -s -f 5
+
+Each --run starts a new diagnostic segment. Arguments after --run <name>
+belong to that diagnostic until the next --run or end of command line.
+"""
+
+
+def require_root():
+    """Exit if not running as root."""
+    if os.geteuid() != 0:
+        print("resource_anomaly must be run as root.", file=sys.stderr)
+        sys.exit(1)
+
+
+def split_run_segments(argv):
+    """Split argv into global args and --run segments.
+
+    Args:
+        argv: list of command-line arguments (without program name).
+
+    Returns:
+        (global_args, segments) where:
+          - global_args: list of args before the first --run
+          - segments: list of lists, each starting with diagnostic name
+
+    Example:
+        >>> split_run_segments(['-j', '--run', 'fdleak', '-c', '--run', 'memcg_leak', '-v'])
+        (['-j'], [['fdleak', '-c'], ['memcg_leak', '-v']])
+    """
+    global_args = []
+    segments = []
+    current = None
+
+    for arg in argv:
+        if arg == "--run":
+            if current is not None:
+                segments.append(current)
+            current = []
+        elif current is not None:
+            current.append(arg)
+        else:
+            global_args.append(arg)
+
+    if current is not None:
+        segments.append(current)
+
+    return global_args, segments
+
+
+def parse_global_args(global_argv):
+    """Parse global options (before first --run)."""
+    parser = argparse.ArgumentParser(
+        prog="resource_anomaly",
+        add_help=False,
+    )
+    parser.add_argument("-j", "--json", action="store_true",
+                        help="Output all results as JSON")
+    parser.add_argument("-o", "--output", default="",
+                        help="Write aggregated report to file")
+    parser.add_argument("--all", action="store_true",
+                        help="Run all diagnostics with sensible defaults")
+    parser.add_argument("--list", action="store_true",
+                        help="List available diagnostics")
+    parser.add_argument("-h", "--help", action="store_true",
+                        help="Show help")
+    return parser.parse_args(global_argv)
+
+
+def print_usage():
+    """Print usage text to stdout."""
+    print(USAGE_TEXT)
+
+
+def print_available_diagnostics():
+    """Print list of registered diagnostics with descriptions."""
+    all_diags = get_all_diagnostics()
+    if not all_diags:
+        print("No diagnostics registered.")
+        return
+    print("Available diagnostics:")
+    print("")
+    max_name_len = max(len(name) for name in all_diags)
+    for name in sorted(all_diags):
+        cls = all_diags[name]
+        desc = cls.description or "(no description)"
+        print("  {name:<{width}}  {desc}".format(
+            name=name, width=max_name_len, desc=desc
+        ))
+    print("")
+    print("Usage: sysak resource_anomaly --run <name> [args...]")
+
+
+def output_results(results, global_args):
+    """Render and output the aggregated diagnostic results."""
+    if global_args.json:
+        # JSON mode: strip text_report from output to keep it clean
+        json_results = []
+        for r in results:
+            jr = {k: v for k, v in r.items() if k != "text_report"}
+            json_results.append(jr)
+        output = json.dumps(json_results, indent=2, ensure_ascii=False)
+        print(output)
+    else:
+        multi = len(results) > 1
+        for idx, result in enumerate(results):
+            name = result.get("diagnostic", "unknown")
+            severity = result.get("severity", "ok")
+            text_report = result.get("text_report", "")
+
+            if multi:
+                # Print a clear section banner between diagnostics
+                if idx > 0:
+                    print("")
+                print("=" * 72)
+                print("[{0}/{1}] {2}  |  severity: {3}".format(
+                    idx + 1, len(results), name, severity
+                ))
+                print("=" * 72)
+
+            if text_report:
+                print(text_report)
+            else:
+                if not multi:
+                    print("")
+                    print("=" * 72)
+                    print("Diagnostic: {0}  |  Severity: {1}".format(name, severity))
+                    print("=" * 72)
+                report = result.get("report", {})
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+
+    # Write to file if requested
+    if global_args.output:
+        json_results = []
+        for r in results:
+            jr = {k: v for k, v in r.items() if k != "text_report"}
+            json_results.append(jr)
+        content = json.dumps(json_results, indent=2, ensure_ascii=False)
+        with codecs.open(global_args.output, "w", encoding="utf-8") as fp:
+            fp.write(content)
+            fp.write("\n")
+        print("\nReport written to: {0}".format(global_args.output), file=sys.stderr)
+
+
+def run_diagnostics(segments, global_args):
+    """Execute each diagnostic segment and collect results.
+
+    Returns:
+        (results, max_exit_code)
+    """
+    results = []
+    max_exit = 0
+
+    for seg in segments:
+        if not seg:
+            print("Error: --run requires a diagnostic name.", file=sys.stderr)
+            return None, 1
+
+        name = seg[0]
+        diag_args = seg[1:]
+
+        diag_cls = get_diagnostic(name)
+        if not diag_cls:
+            print("Error: unknown diagnostic '{0}'.".format(name), file=sys.stderr)
+            print("Use --list to see available diagnostics.", file=sys.stderr)
+            return None, 1
+
+        diag = diag_cls()
+        sub_parser = argparse.ArgumentParser(
+            prog="resource_anomaly --run {0}".format(name),
+            description=diag.description,
+        )
+        diag.add_arguments(sub_parser)
+        parsed = sub_parser.parse_args(diag_args)
+
+        try:
+            result = diag.run(parsed)
+        except Exception as exc:
+            result = {
+                "severity": "critical",
+                "report": {"error": str(exc)},
+                "exit_code": 2,
+            }
+
+        result["diagnostic"] = name
+        results.append(result)
+        exit_code = result.get("exit_code", 0)
+        if exit_code > max_exit:
+            max_exit = exit_code
+
+    return results, max_exit
+
+
+# Default arguments for each diagnostic when using --all mode.
+# Order determines execution sequence.
+_ALL_MODE_DEFAULTS = [
+    ("fdleak", ["-c"]),
+    ("memcgoffline", ["-s", "-f", "5", "-n", "20"]),
+    ("diskscanner", ["--brief", "--deadline", "300"]),
+]
+
+
+def _build_all_segments():
+    """Build --run segments for all registered diagnostics with defaults."""
+    all_diags = get_all_diagnostics()
+    segments = []
+    # Use predefined order and defaults for known diagnostics.
+    for name, default_args in _ALL_MODE_DEFAULTS:
+        if name in all_diags:
+            segments.append([name] + default_args)
+    # Append any newly registered diagnostics not in the defaults list.
+    known = set(name for name, _ in _ALL_MODE_DEFAULTS)
+    for name in sorted(all_diags):
+        if name not in known:
+            segments.append([name])
+    return segments
+
+
+def main(argv=None):
+    """Main entry point for resource_anomaly."""
+    argv = argv if argv is not None else sys.argv[1:]
+    safe_exit = _safe_dispatch(argv)
+    if safe_exit is not None:
+        return safe_exit
+    _ensure_utf8_stdout()
+    require_root()
+
+    global_argv, segments = split_run_segments(argv)
+    global_args = parse_global_args(global_argv)
+
+    if global_args.help:
+        print_usage()
+        return 0
+
+    if global_args.list:
+        print_available_diagnostics()
+        return 0
+
+    if not segments:
+        if getattr(global_args, 'all', False):
+            segments = _build_all_segments()
+        else:
+            print("Error: no --run segment specified. Use --all or --help for usage.",
+                  file=sys.stderr)
+            return 1
+
+    results, max_exit = run_diagnostics(segments, global_args)
+    if results is None:
+        return max_exit
+
+    output_results(results, global_args)
+    return max_exit
+
+
+if __name__ == "__main__":
+    # Handle SIGPIPE gracefully (e.g. when piped through head/tail)
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, ValueError):
+        pass  # SIGPIPE not available on Windows
+    sys.exit(main())

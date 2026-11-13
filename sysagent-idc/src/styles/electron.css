@@ -1,0 +1,111 @@
+html,
+body {
+  overscroll-behavior: none;
+}
+
+.topbar,
+.desktop-demo-label {
+  -webkit-app-region: drag;
+}
+
+.topbar button,
+.topbar input,
+.topbar select,
+.topbar a,
+.desktop-demo-label button,
+.mascot-launcher,
+.resource-demo-controls,
+.launcher-window-controls {
+  -webkit-app-region: no-drag;
+}
+
+.launcher-window-controls {
+  position: absolute;
+  top: 22px;
+  right: 24px;
+  z-index: 80;
+  display: flex;
+  gap: 4px;
+}
+
+.launcher-window-controls button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #7d8ea6;
+  background: #ffffff66;
+  border: 1px solid #ffffff80;
+  transition: background 0.15s, color 0.15s;
+}
+
+.launcher-window-controls button:hover {
+  background: #ffffffc7;
+  color: #33465e;
+}
+
+.launcher-window-controls button[data-close='true']:hover {
+  background: #e2555520;
+  color: #cf3f3f;
+}
+
+@media (max-width: 600px) {
+  .launcher-window-controls {
+    top: 16px;
+    right: 16px;
+  }
+}
+
+.native-main #root,
+.native-main .desktop-demo {
+  padding: 0;
+}
+
+.native-main .desktop-wallpaper {
+  display: none;
+}
+
+.native-main .desktop-window {
+  height: 100%;
+}
+
+.native-main .guard-desktop,
+.native-main .guard-desktop.expanded {
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+.native-floating,
+.native-floating body,
+.native-floating #root {
+  background: transparent;
+  background-image: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.native-mascot {
+  position: fixed;
+  inset: 0;
+}
+
+.native-mascot .mascot-launcher {
+  right: 24px;
+  bottom: 32px;
+}
+
+.native-mascot .mascot-alert-card {
+  position: absolute;
+  inset: 16px 16px auto !important;
+  width: auto;
+}
+
+.native-mascot .mascot-name {
+  color: #5c6e91;
+  text-shadow: 0 1px 3px #fff;
+}

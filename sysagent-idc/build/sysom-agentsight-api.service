@@ -1,0 +1,31 @@
+[Unit]
+Description=SysAgent AgentSight private managed loopback API
+ConditionPathExists=/etc/sysom-agentsight/consent.json
+After=local-fs.target
+
+[Service]
+Type=simple
+# Shares the trace service's numeric UID/GID and data directory via drop-in.
+User=sysom-agentsight-unenrolled
+Group=sysom-agentsight-unenrolled
+ExecStartPre=+/usr/bin/python3 -I /usr/share/sysom/agentsight-runtime/agentsight-collection.py verify
+# Loopback auth bypass means this endpoint is not a multiuser token boundary.
+ExecStart=/usr/share/sysom/agentsight-runtime/agentsight serve --config /etc/sysom-agentsight/config.json --host 127.0.0.1 --port 7397
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+UMask=0077
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+IPAddressDeny=any
+IPAddressAllow=localhost
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

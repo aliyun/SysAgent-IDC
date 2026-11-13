@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "platform": "linux",
+  "arch": "x64",
+  "commands": [
+    "idc",
+    "resource_anomaly",
+    "memgraph",
+    "ai"
+  ],
+  "requires": [
+    "python3"
+  ],
+  "safe_profiles": {
+    "resource_anomaly": [
+      "--idc"
+    ],
+    "memgraph": [
+      "--graph",
+      "--jsonstdout"
+    ],
+    "ai": [
+      "--threshold",
+      "1s"
+    ]
+  },
+  "files": {
+    ".sysak_components/tools/.sysak.rules": "2afe4ef4723f5119c1ecc86335012b0faa6bb951e1944997d9c56ceaaf3fc6c1",
+    ".sysak_components/tools/ai": "c1a2a3307a199f934c66818a61beb362f65a7288e06072fc4d72c4c7240d5491",
+    ".sysak_components/tools/fdleak_metrics.py": "abb95060f86d7e0e895d76b9b3bcb9413ce54d5206dfb12f5bcac4e0b17112f6",
+    ".sysak_components/tools/idc": "ff3619660a7b745fc6f6f35a446985be7d1220f217d727dbd7ee4ebc18541f70",
+    ".sysak_components/tools/mem_utils.py": "b68a7e05dcd9b5854ac53a7aa46845f2163ff434ab16823cd2044264a7d989d3",
+    ".sysak_components/tools/memgraph": "7c21944465eecb2e19764e1c6ffdeccb8cb55cda5cc672978e121b7c74d4ddfb",
+    ".sysak_components/tools/plugin_abnormalPackages.py": "e1fdbc8f6ac3a00f361a149e66dc9e1ad0472cbca8ab4653cb1854b486a5fefd",
+    ".sysak_components/tools/plugin_anonTaskTop.py": "15dd37ecb6ec9a281b2baef742b5a06a77a6791bba43a846faf50b0b2b169078",
+    ".sysak_components/tools/plugin_appmem.py": "9758d0804cc6a0d810996c35a22a42dd6e418afcdefb30c66cfe66bee7d2750a",
+    ".sysak_components/tools/plugin_cache.py": "638696f1f2470f26c93bd6f909292adb6b0d6c44b775af7169b65817716e23a2",
+    ".sysak_components/tools/plugin_memcgLeak.py": "600e6e3433d09e40c0c87af1378f1a5674de21dc730ee3bd597ccd2061a8e1ce",
+    ".sysak_components/tools/plugin_memfrag.py": "45af5516b143a6c40dc7fcf2af31a42e0282f8cc4d7ec8cc6d7dc752b6e0fc95",
+    ".sysak_components/tools/plugin_memgraph.py": "aabc4276c2c27f582f91e0dd7a726c4923cfa32de2c5b57d77993b773ce11e73",
+    ".sysak_components/tools/plugin_meminfo.py": "c964e2aae4f94fe8e32737733f5db0802653ec9f8d9148c345ed201cbcde8fda",
+    ".sysak_components/tools/plugin_memleak.py": "2933011e69a9730f40a280022deae18f9121b8fc09fc33f7e1eef93d235fac65",
+    ".sysak_components/tools/plugin_podDetect.py": "cb75e3352d66511ad1042837785047edd97f55a47de273395e08d022d9b1797f",
+    ".sysak_components/tools/plugin_skcheck.py": "3440a0b753bb10585cb5626625258a97d3e3b8e765d714208493b0311de5dc03",
+    ".sysak_components/tools/plugin_system.py": "0f5fb62a13b1eab65ab70c450b9d07bba52e02e3088353a97524380c4f1fe38e",
+    ".sysak_components/tools/plugin_taskProc.py": "1e726fe0b690fa459180c6318fc0540e5561835b76c602e25d101119c84af191",
+    ".sysak_components/tools/plugin_thpCollect.py": "40c8cfa6b7d0c1d53d9df1a8352413c89017dd27e443d8205feb35b5c62bfbd6",
+    ".sysak_components/tools/plugin_vmRssTaskTop.py": "5f97816d9837d43d9f5277e33bdd5069bdf667dded47abe10852e58f7a667c56",
+    ".sysak_components/tools/resource_anomaly": "bbbd6c9c9e57e00485a19e163aa84c509f1cb1af1a71bf8ed1979d386eda4daa",
+    ".sysak_components/tools/resource_anomaly_idc.py": "05228df5d1e3bed4d826f771545e3b91dbe71b3fe3ab5f1ba6452f512c7adb32",
+    "sysak": "6939db93403e269e47d6b02d0c1f3825d78d9066b4134798dcc4f0eff5e64d8f"
+  }
+}

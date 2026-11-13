@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "paths": {
+      "react": ["../../sysagent-idc/node_modules/@types/react"],
+      "react/*": ["../../sysagent-idc/node_modules/@types/react/*"],
+      "react-dom/*": ["../../sysagent-idc/node_modules/@types/react-dom/*"]
+    }
+  },
+  "include": [".", "../src/protocol.ts", "../../sysagent-idc/src/vite-env.d.ts"]
+}
