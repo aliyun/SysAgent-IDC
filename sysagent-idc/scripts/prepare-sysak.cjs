@@ -7,7 +7,9 @@ const crypto = require('node:crypto');
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const TOOLS = '.sysak_components/tools';
 const LEGACY_COMMANDS = Object.freeze(['idc', 'resource_anomaly', 'memgraph']);
-const COMMANDS = Object.freeze([...LEGACY_COMMANDS, 'ai']);
+// sysAK 已把 idc 合并进 idc_inspect；旧四命令包只允许被原子替换，不再用于运行时校验。
+const SUPERSEDED_COMMANDS = Object.freeze([...LEGACY_COMMANDS, 'ai']);
+const COMMANDS = Object.freeze(['idc_inspect', 'resource_anomaly', 'memgraph', 'ai']);
 const AI_RULE = 'generic:ai::help{GPU AI diagnostics}';
 // Native memgraph's complete Makefile pymods/import closure, plus resource_anomaly's IDC modules.
 const DIAGNOSTIC_MODULES = Object.freeze([
@@ -24,20 +26,23 @@ const SAFE_PROFILES = Object.freeze({
   ai: Object.freeze(['--threshold', '1s']),
 });
 const RULES = `${TOOLS}/.sysak.rules`;
-const REQUIRED_FILES = Object.freeze([
-  'sysak', ...COMMANDS.map(name => `${TOOLS}/${name}`), RULES,
-  ...DIAGNOSTIC_MODULES.map(name => `${TOOLS}/${name}.py`),
-].sort());
-const ALLOWED_FILES = new Set([...REQUIRED_FILES, 'manifest.json']);
-const LEGACY_DIRS = new Set(['.sysak_components', TOOLS]);
-const ALLOWED_DIRS = LEGACY_DIRS;
-const CURRENT_BUNDLE = Object.freeze({ commands: COMMANDS, profiles: SAFE_PROFILES,
-  required: REQUIRED_FILES, files: ALLOWED_FILES, directories: ALLOWED_DIRS });
+const ALLOWED_DIRS = new Set(['.sysak_components', TOOLS]);
+
 // Upgrade-only closure: no GPU files/directories, unknown components or relaxed rules.
-const LEGACY_REQUIRED_FILES = Object.freeze(REQUIRED_FILES.filter(relative => relative !== `${TOOLS}/ai`));
-const LEGACY_BUNDLE = Object.freeze({ commands: LEGACY_COMMANDS,
-  profiles: Object.freeze({ resource_anomaly: SAFE_PROFILES.resource_anomaly, memgraph: SAFE_PROFILES.memgraph }),
-  required: LEGACY_REQUIRED_FILES, files: new Set([...LEGACY_REQUIRED_FILES, 'manifest.json']), directories: LEGACY_DIRS });
+function bundleFor(commands) {
+  const required = Object.freeze([
+    'sysak', ...commands.map(name => `${TOOLS}/${name}`), RULES,
+    ...DIAGNOSTIC_MODULES.map(name => `${TOOLS}/${name}.py`),
+  ].sort());
+  return Object.freeze({ commands,
+    profiles: Object.freeze(Object.fromEntries(Object.entries(SAFE_PROFILES).filter(([name]) => commands.includes(name)))),
+    required, files: new Set([...required, 'manifest.json']), directories: ALLOWED_DIRS });
+}
+
+const CURRENT_BUNDLE = bundleFor(COMMANDS);
+const LEGACY_BUNDLE = bundleFor(LEGACY_COMMANDS);
+const SUPERSEDED_BUNDLE = bundleFor(SUPERSEDED_COMMANDS);
+const REQUIRED_FILES = CURRENT_BUNDLE.required;
 const MACHINE = Object.freeze({ x64: 62, arm64: 183 });
 
 function fail(message) {
@@ -79,7 +84,7 @@ function inside(parent, child) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function safeFile(root, relative, allowedFiles = ALLOWED_FILES) {
+function safeFile(root, relative, allowedFiles = CURRENT_BUNDLE.files) {
   if (!allowedFiles.has(relative)) fail(`Unexpected file path: ${relative}`);
   assertDirectory(path.dirname(path.join(root, relative)));
   const file = path.join(root, relative);
@@ -132,7 +137,7 @@ function normalizeRulesForCommands(text, strict, commands) {
     if (command === 'ai') {
       if (candidate !== AI_RULE) fail(`Invalid ai rule; expected ${AI_RULE} without python-dep`);
     } else {
-      const match = /^([A-Za-z0-9_/-]+):(idc|resource_anomaly|memgraph):python-dep\{python3\}:help\{([^\r\n\0]*)\}$/.exec(candidate);
+      const match = /^([A-Za-z0-9_/-]+):(idc_inspect|idc|resource_anomaly|memgraph):python-dep\{python3\}:help\{([^\r\n\0]*)\}$/.exec(candidate);
       if (!match) fail(`Invalid ${command} rule; expected only python-dep{python3} and help{...}`);
     }
     if (selected.has(command) && selected.get(command) !== candidate) fail(`Conflicting duplicate ${command} rules`);
@@ -194,7 +199,8 @@ function verifyBundle(root = path.join(PROJECT_ROOT, 'resources/sysak')) {
 function verifyReplaceableBundle(root) {
   const manifest = parseJson(safeFile(root, 'manifest.json').data, 'manifest.json');
   const commands = JSON.stringify(manifest?.commands);
-  const bundle = commands === JSON.stringify(LEGACY_COMMANDS) ? LEGACY_BUNDLE : CURRENT_BUNDLE;
+  const bundle = [LEGACY_BUNDLE, SUPERSEDED_BUNDLE, CURRENT_BUNDLE]
+    .find(candidate => JSON.stringify(candidate.commands) === commands) || CURRENT_BUNDLE;
   return verifyBundleSchema(root, bundle);
 }
 

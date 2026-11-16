@@ -9,6 +9,13 @@ const ts = require('typescript');
 const { collectAgentEvidence, agentSightUrl } = require('../electron/agentsight-client.cjs');
 const { createIdcController } = require('../electron/idc-controller.cjs');
 
+// AgentSight must stay independent of the sysAK installation. Collection now resolves the
+// system sysak (/usr/bin/sysak exists on real hosts), so force a deterministic resolution
+// miss: an explicit override that cannot exist. bundleRoot is still the AgentSight
+// root-service path, and sysomConfig: null keeps these tests in local mock mode.
+const MISSING_SYSAK_ROOT = path.join(__dirname, 'missing-sysak-fixture');
+const MISSING_SYSAK_BINARY = path.join(MISSING_SYSAK_ROOT, 'sysak');
+
 async function fixture(t, handler) {
   const server = http.createServer(handler);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -284,7 +291,7 @@ test('controller routes AgentSight through real OpenAPI without requiring SysAK 
     requests++;
     send(response, data[new URL(request.url, 'http://localhost').pathname]);
   });
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'), startMockOpenApi: loadOpenApi(), agentSight: { baseUrl } });
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null, startMockOpenApi: loadOpenApi(), agentSight: { baseUrl } });
   t.after(() => controller.close());
   assert.equal(controller.status().installed, false);
   const [first, second] = await Promise.all([controller.agentSnapshot(), controller.agentSnapshot(true)]);
@@ -350,7 +357,7 @@ test('fake scheduler reuses through 59999 ms, expires at 60000 ms and deduplicat
       send(response, value);
     }
   });
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'),
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null,
     startMockOpenApi: loadOpenApi(), scheduler, agentSight: { baseUrl, token: 'fixture-token' },
     processActionImpl: () => assert.fail('No process action may run') });
   t.after(() => controller.close());
@@ -403,7 +410,7 @@ test('fake scheduler clock rollback forces recollection and never treats a negat
     requests++;
     send(response, dataFor(scheduler.now())[new URL(request.url, 'http://localhost').pathname]);
   });
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'),
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null,
     startMockOpenApi: loadOpenApi(), scheduler, agentSight: { baseUrl, token: 'fixture-token' } });
   t.after(() => controller.close());
   const first = await controller.agentSnapshot(false);
@@ -423,7 +430,7 @@ test('probe observations made during requests use collection completion time and
   const baseUrl = await fixture(t, (request, response) => {
     setTimeout(() => send(response, dataFor()[new URL(request.url, 'http://localhost').pathname]), 30);
   });
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'),
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null,
     startMockOpenApi: loadOpenApi(), agentSight: { baseUrl } });
   t.after(() => controller.close());
   const report = await controller.agentSnapshot();
@@ -437,7 +444,7 @@ test('closing the controller aborts pending AgentSight requests without committi
   let firstRequest;
   const requested = new Promise(resolve => { firstRequest = resolve; });
   const baseUrl = await fixture(t, () => firstRequest());
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'),
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null,
     startMockOpenApi: loadOpenApi(), agentSight: { baseUrl } });
   const pending = controller.agentSnapshot();
   const rejected = assert.rejects(pending, { code: 'COLLECTION_CANCELLED' });
@@ -458,7 +465,7 @@ test('controller failure preserves prior analysis without extending TTL; expired
   let unavailable = false;
   const realStart = loadOpenApi();
   let observedBody;
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'), scheduler, agentSight: { baseUrl, token: 'fixture-token' },
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null, scheduler, agentSight: { baseUrl, token: 'fixture-token' },
     processActionImpl: () => assert.fail('Agent diagnosis must never act on a process'),
     startMockOpenApi: async ({ token }) => {
       const real = await realStart({ token });
@@ -1174,7 +1181,7 @@ test('controller checks and starts AgentSight at host startup independently of S
   const started = serviceDeferred();
   let requests = 0;
   let launches = 0;
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'),
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null,
     startMockOpenApi: loadOpenApi(), scheduler, agentSightService: true,
     agentSight: { binary: SERVICE_BINARY, configPath: SERVICE_CONFIG, env: {}, fsImpl: serviceFakeFs().impl,
       pollIntervalMs: 2, probeTimeoutMs: 20,
@@ -1203,7 +1210,7 @@ test('controller checks and starts AgentSight at host startup independently of S
 });
 
 test('controller returns actionable missing dependency evidence rather than fabricated healthy data', async t => {
-  const controller = await createIdcController({ bundleRoot: path.join(__dirname, 'missing-sysak-fixture'),
+  const controller = await createIdcController({ bundleRoot: MISSING_SYSAK_ROOT, sysakBinary: MISSING_SYSAK_BINARY, sysomConfig: null,
     startMockOpenApi: loadOpenApi(), agentSightService: true,
     agentSight: { binary: SERVICE_BINARY, configPath: SERVICE_CONFIG, env: {}, fsImpl: serviceFakeFs({}).impl,
       fetchImpl: async () => { throw serviceNetworkError(); }, spawnImpl: () => assert.fail('Missing binary must not launch') },

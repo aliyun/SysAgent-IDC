@@ -30,7 +30,7 @@ function fixture() {
   const findings = [{ check: 'hardware', severity: 'OK', message: 'Overall hardware', suggestion: 'observe' }];
   const job = { pid: 123, starttime: 456, name: 'training', state: 'S', cpuPercent: 0, rssBytes: 0, gpuIndices: [0], smUtilization: null, memoryUtilization: 0, status: 'partial', findings: [{ check: 'job', severity: 'WARN', message: 'Job short window' }] };
   return {
-    status: { schema_version: '1.0', mode: 'mock', read_only: true, device_id: 'device', installed: false, enabled: false, phase: 'disabled', api_version: '1.0', last_task: null, inspection_interval_minutes: 5, next_inspection_at: null, error: null },
+    status: { schema_version: '1.1', mode: 'mock', read_only: true, device_id: 'device', installed: false, enabled: false, phase: 'disabled', api_version: '1.0', last_task: null, inspection_interval_minutes: 5, next_inspection_at: null, error: null },
     state: {
       mode: 'collected', hasGpu: true, revision: 7, sampledAt: TIME, resources,
       inspections: [{ id: 'root', label: 'Root', important: true, phase: 1, status: 'normal', usage: 0, detail: 'cached evidence', evidence: ['no action'], execution: 'complete' }, { id: 'gpu', label: 'GPU', important: false, phase: 1, status: 'unchecked', usage: null, detail: 'not checked', evidence: [], execution: 'unavailable' }],
@@ -52,7 +52,7 @@ function fixture() {
       findings: [{ severity: 'warning', title: 'Coverage', detail: 'Missing interruptions', suggestion: 'Inspect separately' }],
       processes, sessions, interruptions: [], latency: [{ agent: null, calls: 0, streamingCalls: 0, ttftP95Ms: null, e2eP95Ms: 0, tpsP50: 0, tpotP95Ms: null }, { agent: 'Qoder', calls: 42, streamingCalls: 41, ttftP95Ms: 100, e2eP95Ms: 300, tpsP50: 10, tpotP95Ms: 20 }],
     },
-    tasks: [{ id: 'task-one', request_id: 'request-one', operation: 'snapshot', status: 'completed', profile: 'resources', collection_status: 'partial', raw_bytes: 0, collected_at: TIME, simulated: false }],
+    tasks: [{ id: 'task-one', request_id: 'request-one', operation: 'snapshot', status: 'completed', profile: 'inspection', collection_status: 'partial', raw_bytes: 0, collected_at: TIME, simulated: false, uploaded: false }],
   };
 }
 function rejects(view, name, text, status = 400, id) {

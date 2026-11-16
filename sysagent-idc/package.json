@@ -29,6 +29,7 @@
     "build:html": "node scripts/build-html.mjs"
   },
   "dependencies": {
+    "@alicloud/sysom20231230": "file:vendor/alicloud-sysom20231230-3.3.2.tgz",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

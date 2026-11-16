@@ -12,7 +12,7 @@ const HELPER = '/opt/SysAgent管家/resources/sysak-root-runner.py';
 const SOCKET = '/run/sysom-idc/idc.sock';
 const AUTH = '/etc/sysom-idc/allowed-uid';
 const TOOLS = '.sysak_components/tools';
-const COMMANDS = Object.freeze(['idc', 'resource_anomaly', 'memgraph', 'ai']);
+const COMMANDS = Object.freeze(['idc_inspect', 'resource_anomaly', 'memgraph', 'ai']);
 const SAFE_PROFILES = Object.freeze({
   resource_anomaly: ['--idc'], memgraph: ['--graph', '--jsonstdout'], ai: ['--threshold', '1s'],
 });
@@ -27,7 +27,6 @@ const REQUIRED_FILES = Object.freeze([
   ...MODULES.map(name => `${TOOLS}/${name}.py`),
 ].sort());
 const DIRECTORIES = Object.freeze(['', '.sysak_components', TOOLS]);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function rootError() {
   const error = new Error('需要管理员安装并启用与当前组件一致的 sysAK IDC 服务，且授权当前用户；不以普通用户回退执行');
@@ -116,21 +115,17 @@ function verifyRootInstallation(binary, { io = fs } = {}) {
   }
 }
 
+// root 服务只保留 AgentSight 采集控制；资源采集与进程操作已改为当前用户直接调用系统 sysak。
 function connectRootIdc(binary, args, { connectImpl = net.createConnection } = {}) {
   const manifestHash = verifyRootInstallation(binary);
-  const collection = args.length === 7 && args[0] === 'idc' && args[1] === '--profile' &&
-    ['resources', 'inspection'].includes(args[2]) && args[3] === '--request-id' && UUID.test(args[4]) &&
-    args[5] === '-o' && args[6] === '-';
-  const action = args.length === 3 && args[0] === 'idc' && args[1] === '--process-action' &&
-    ['check', 'terminate'].includes(args[2]);
   const agentCollection = args.length === 3 && args[0] === 'idc' && args[1] === '--agent-collection' &&
     ['status', 'ensure', 'disable'].includes(args[2]);
-  if (!collection && !action && !agentCollection) throw rootError();
+  if (!agentCollection) throw rootError();
   const request = new EventEmitter();
   request.stdin = new PassThrough();
   request.stdout = new PassThrough();
   request.stderr = new PassThrough();
-  const timeout = action ? 15000 : 35000;
+  const timeout = 35000;
   const deadline = Date.now() + timeout;
   const socket = connectImpl({ path: SOCKET });
   const input = [];
@@ -200,7 +195,7 @@ function connectRootIdc(binary, args, { connectImpl = net.createConnection } = {
   });
   socket.on('error', () => finish(126, rootError()));
   socket.on('close', () => { if (!done) finish(126, rootError()); });
-  if (collection) queueMicrotask(() => request.stdin.end());
+  queueMicrotask(() => request.stdin.end());
   return request;
 }
 

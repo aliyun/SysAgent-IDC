@@ -17,7 +17,9 @@ const ROOT = path.resolve(__dirname, '..');
 const TOOLS = '.sysak_components/tools';
 const RULES = `${TOOLS}/.sysak.rules`;
 const LEGACY_COMMANDS = ['idc', 'resource_anomaly', 'memgraph'];
-const COMMANDS = [...LEGACY_COMMANDS, 'ai'];
+const SUPERSEDED_COMMANDS = [...LEGACY_COMMANDS, 'ai'];
+const COMMANDS = ['idc_inspect', 'resource_anomaly', 'memgraph', 'ai'];
+const PYTHON_COMMANDS = COMMANDS.filter(name => name !== 'ai');
 const DIRECTORIES = ['.sysak_components', TOOLS];
 const DIAGNOSTIC_MODULES = [
   'resource_anomaly_idc', 'fdleak_metrics',
@@ -33,7 +35,7 @@ const EXPECTED_FILES = [
   'sysak', ...COMMANDS.map(name => `${TOOLS}/${name}`), RULES,
   ...DIAGNOSTIC_MODULES.map(name => `${TOOLS}/${name}.py`),
 ].sort();
-const canonicalRules = 'detect/generic:idc:python-dep{python3}:help{idc}\n' +
+const canonicalRules = 'detect/generic:idc_inspect:python-dep{python3}:help{idc_inspect}\n' +
   'detect/generic:resource_anomaly:python-dep{python3}:help{resource_anomaly --idc only}\n' +
   'detect/mem:memgraph:python-dep{python3}:help{memgraph --graph --jsonstdout}\n' +
   'generic:ai::help{GPU AI diagnostics}\n';
@@ -225,7 +227,7 @@ for (const relative of EXPECTED_FILES) {
   });
 }
 
-for (const command of LEGACY_COMMANDS) {
+for (const command of PYTHON_COMMANDS) {
   test(`preparation and verification require a python3 entry: ${command}`, t => {
     const f = fixture(t);
     f.prepare();
@@ -296,10 +298,10 @@ for (const name of [...COMMANDS, ...DIAGNOSTIC_MODULES.map(module => `${module}.
 test('hash tamper is rejected, including when asked to replace a damaged bundle', t => {
   const f = fixture(t);
   f.prepare();
-  fs.appendFileSync(path.join(f.bundle, TOOLS, 'idc'), '# tamper\n');
+  fs.appendFileSync(path.join(f.bundle, TOOLS, 'idc_inspect'), '# tamper\n');
   assert.throws(() => verifyBundle(f.bundle), /SHA256 mismatch/);
   assert.throws(f.prepare, /SHA256 mismatch/);
-  assert.match(fs.readFileSync(path.join(f.bundle, TOOLS, 'idc'), 'utf8'), /tamper/);
+  assert.match(fs.readFileSync(path.join(f.bundle, TOOLS, 'idc_inspect'), 'utf8'), /tamper/);
   assert.deepEqual(fs.readdirSync(path.dirname(f.bundle)), ['sysak']);
 });
 
@@ -427,7 +429,7 @@ test('rules require three python3 commands and native ai, unambiguous duplicates
   assert.throws(() => normalizeRules(canonicalRules + canonicalRules, true), /exactly one canonical/);
   assert.throws(() => normalizeRules([...lines].reverse().join('\n') + '\n', true), /exactly one canonical/);
   assert.throws(() => normalizeRules(canonicalRules + 'detect:other::help{other}\n', true), /Unexpected sysAK rule/);
-  assert.throws(() => normalizeRules(canonicalRules.replace('python-dep{python3}', 'prev{modin};python-dep{python3}')), /Invalid idc rule/);
+  assert.throws(() => normalizeRules(canonicalRules.replace('python-dep{python3}', 'prev{modin};python-dep{python3}')), /Invalid idc_inspect rule/);
 });
 
 for (const [name, rules, error] of [
@@ -470,7 +472,7 @@ test('source symlinks at the root, ancestors, entry, modules and rules are rejec
 
 test('a non-regular entry fails without opening or executing it', t => {
   const f = fixture(t);
-  const entry = path.join(f.source, TOOLS, 'idc');
+  const entry = path.join(f.source, TOOLS, 'idc_inspect');
   fs.unlinkSync(entry);
   fs.mkdirSync(entry);
   assert.throws(f.prepare, /non-regular/);
@@ -623,20 +625,43 @@ test('refuses overlapping source/target, a different project and arbitrary CLI t
   assert.deepEqual(parseArgs(['--source', f.source]), { source: f.source, verify: false });
 });
 
-const LEGACY_FILES = EXPECTED_FILES.filter(relative => relative !== `${TOOLS}/ai`);
-const legacyRules = canonicalRules.split('\n').filter(line => !line.includes(':ai:')).join('\n');
+const LEGACY_FILES = EXPECTED_FILES.filter(relative => relative !== `${TOOLS}/ai`)
+  .map(relative => relative === `${TOOLS}/idc_inspect` ? `${TOOLS}/idc` : relative);
+const legacyRules = canonicalRules.split('\n').filter(line => !line.includes(':ai:'))
+  .map(line => line.replace(':idc_inspect:', ':idc:').replace('help{idc_inspect}', 'help{idc}')).join('\n');
 function legacyBundle(f) {
   f.prepare();
   fs.unlinkSync(path.join(f.bundle, TOOLS, 'ai'));
+  fs.renameSync(path.join(f.bundle, TOOLS, 'idc_inspect'), path.join(f.bundle, TOOLS, 'idc'));
   fs.writeFileSync(path.join(f.bundle, RULES), legacyRules);
   rewriteManifest(f.bundle, manifest => {
     manifest.commands = LEGACY_COMMANDS;
     delete manifest.safe_profiles.ai;
+    const inspectHash = manifest.files[`${TOOLS}/idc_inspect`];
     for (const relative of Object.keys(manifest.files)) if (!LEGACY_FILES.includes(relative)) delete manifest.files[relative];
+    manifest.files[`${TOOLS}/idc`] = inspectHash;
     manifest.files[RULES] = sha256(Buffer.from(legacyRules));
   });
   assert.equal(LEGACY_FILES.length, 23);
   assert.deepEqual(fileList(f.bundle), [...LEGACY_FILES, 'manifest.json'].sort());
+}
+
+// The four-command package shipped before sysAK merged idc into idc_inspect.
+const SUPERSEDED_FILES = EXPECTED_FILES.map(relative => relative === `${TOOLS}/idc_inspect` ? `${TOOLS}/idc` : relative);
+const supersededRules = canonicalRules.split('\n')
+  .map(line => line.replace(':idc_inspect:', ':idc:').replace('help{idc_inspect}', 'help{idc}')).join('\n');
+function supersededBundle(f) {
+  f.prepare();
+  fs.renameSync(path.join(f.bundle, TOOLS, 'idc_inspect'), path.join(f.bundle, TOOLS, 'idc'));
+  fs.writeFileSync(path.join(f.bundle, RULES), supersededRules);
+  rewriteManifest(f.bundle, manifest => {
+    manifest.commands = SUPERSEDED_COMMANDS;
+    const inspectHash = manifest.files[`${TOOLS}/idc_inspect`];
+    delete manifest.files[`${TOOLS}/idc_inspect`];
+    manifest.files[`${TOOLS}/idc`] = inspectHash;
+    manifest.files[RULES] = sha256(Buffer.from(supersededRules));
+  });
+  assert.deepEqual(fileList(f.bundle), [...SUPERSEDED_FILES, 'manifest.json'].sort());
 }
 
 for (const includeGpuFiles of [false, true]) {
@@ -697,14 +722,31 @@ test('a fully validated three-command bundle upgrades atomically; normal verific
   const f = fixture(t);
   legacyBundle(f);
   const oldManifest = JSON.parse(fs.readFileSync(path.join(f.bundle, 'manifest.json'), 'utf8'));
-  assert.throws(() => verifyBundle(f.bundle), /missing required components/);
+  assert.throws(() => verifyBundle(f.bundle), /missing required components|Unexpected file/);
   const manifest = f.prepare();
   assert.deepEqual(manifest.commands, COMMANDS);
   assert.deepEqual(manifest.safe_profiles, SAFE_PROFILES);
   assert.deepEqual(verifyBundle(f.bundle), manifest);
-  for (const relative of LEGACY_FILES.filter(relative => relative !== RULES)) {
+  for (const relative of LEGACY_FILES.filter(name => name !== RULES && name !== `${TOOLS}/idc`)) {
     assert.equal(manifest.files[relative], oldManifest.files[relative]);
   }
+  assert.equal(manifest.files[`${TOOLS}/idc_inspect`], oldManifest.files[`${TOOLS}/idc`]);
+  assert.deepEqual(fs.readdirSync(path.dirname(f.bundle)), ['sysak']);
+});
+
+test('the superseded four-command idc package upgrades atomically but never passes runtime verification', t => {
+  const f = fixture(t);
+  supersededBundle(f);
+  const oldManifest = JSON.parse(fs.readFileSync(path.join(f.bundle, 'manifest.json'), 'utf8'));
+  assert.deepEqual(oldManifest.commands, SUPERSEDED_COMMANDS);
+  assert.throws(() => verifyBundle(f.bundle), /missing required components|Unexpected file/);
+  const manifest = f.prepare();
+  assert.deepEqual(manifest.commands, COMMANDS);
+  assert.deepEqual(verifyBundle(f.bundle), manifest);
+  for (const relative of SUPERSEDED_FILES.filter(name => name !== RULES && name !== `${TOOLS}/idc`)) {
+    assert.equal(manifest.files[relative], oldManifest.files[relative]);
+  }
+  assert.equal(manifest.files[`${TOOLS}/idc_inspect`], oldManifest.files[`${TOOLS}/idc`]);
   assert.deepEqual(fs.readdirSync(path.dirname(f.bundle)), ['sysak']);
 });
 
@@ -731,7 +773,7 @@ for (const [label, damage] of [
   ['missing file', f => fs.unlinkSync(path.join(f.bundle, TOOLS, 'idc'))],
   ['writable file', f => fs.chmodSync(path.join(f.bundle, TOOLS, 'idc'), 0o777)],
   ['writable directory', f => fs.chmodSync(path.join(f.bundle, TOOLS), 0o777)],
-  ['symlink', f => { fs.unlinkSync(path.join(f.bundle, TOOLS, 'idc')); fs.symlinkSync(path.join(f.source, TOOLS, 'idc'), path.join(f.bundle, TOOLS, 'idc')); }],
+  ['symlink', f => { fs.unlinkSync(path.join(f.bundle, TOOLS, 'idc')); fs.symlinkSync(path.join(f.source, TOOLS, 'idc_inspect'), path.join(f.bundle, TOOLS, 'idc')); }],
   ['unlisted GPU directory', f => fs.mkdirSync(path.join(f.bundle, TOOLS, 'light_inspect'))],
   ['unlisted file', f => write(path.join(f.bundle, TOOLS, 'confscan'), 'untouched')],
   ['unlisted file with digest', f => { write(path.join(f.bundle, TOOLS, 'confscan'), 'untouched'); rewriteManifest(f.bundle, m => { m.files[`${TOOLS}/confscan`] = sha256('untouched'); }); }],
@@ -761,7 +803,7 @@ for (const [label, damage] of [
   });
 }
 
-for (const legacy of [legacyBundle]) for (const failure of ['rename', 'post-install verification', 'rollback']) {
+for (const legacy of [legacyBundle, supersededBundle]) for (const failure of ['rename', 'post-install verification', 'rollback']) {
   test(`${legacy.name} atomic upgrade handles ${failure} failure without losing the validated old package`, t => {
     const f = fixture(t);
     legacy(f);
@@ -810,7 +852,7 @@ test('post-replacement verification failure rolls back without deleting the prev
   const rename = fs.renameSync;
   t.mock.method(fs, 'renameSync', (from, to) => {
     rename(from, to);
-    if (to === f.bundle && path.basename(from) === 'package') fs.appendFileSync(path.join(to, TOOLS, 'idc'), '# tampered\n');
+    if (to === f.bundle && path.basename(from) === 'package') fs.appendFileSync(path.join(to, TOOLS, 'idc_inspect'), '# tampered\n');
   });
   assert.throws(f.prepare, /SHA256 mismatch/);
   assert.deepEqual(snapshot(f.bundle), before);
@@ -1015,7 +1057,7 @@ test('afterPack refuses source resources and relative output paths', async t => 
 
 test('afterPack still rejects hash tampering after mode normalization', async t => {
   const f = packedFixture(t);
-  fs.appendFileSync(path.join(f.packedBundle, TOOLS, 'idc'), '# tamper\n');
+  fs.appendFileSync(path.join(f.packedBundle, TOOLS, 'idc_inspect'), '# tamper\n');
   await assert.rejects(afterPack({ appOutDir: f.appOutDir }), /SHA256 mismatch/);
 });
 
@@ -1070,7 +1112,7 @@ test('packaging configuration, build ordering and hooks match the application in
   for (const module of DIAGNOSTIC_MODULES) assert.ok(install.includes(module));
   for (const command of COMMANDS) assert.ok(install.includes(`"$TOOLS_DIR/${command}"`));
   assert.doesNotMatch(install, /confscan|light_inspect|gpudiag/);
-  assert.match(install, /chmod 755 "\$SYSAK_DIR\/sysak" "\$TOOLS_DIR\/idc"/);
+  assert.match(install, /chmod 755 "\$SYSAK_DIR\/sysak" "\$TOOLS_DIR\/idc_inspect"/);
   assert.match(install, /chown root:root "\$APP_DIR\/chrome-sandbox"/);
   assert.match(install, /chmod 4755 "\$APP_DIR\/chrome-sandbox"/);
   assert.match(remove, /remove\|purge\)/);
@@ -1087,7 +1129,7 @@ test('packaging configuration, build ordering and hooks match the application in
     const ownership = hook.split('\n').map(line => line.trim()).filter(line => /^chown\b/.test(line));
     assert.deepEqual(ownership, hook === install ? [
       'chown root:root "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR" "$ROOT_HELPER" "$GX_HELPER" "$UNIT_SOURCE"',
-      'chown root:root "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules" "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"',
+      'chown root:root "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules" "$TOOLS_DIR/idc_inspect" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"',
       'chown root:root "$TOOLS_DIR/$module.py"',
       'chown root:root "$APP_DIR/chrome-sandbox"',
     ] : []);
@@ -1809,11 +1851,12 @@ for (const relative of EXPECTED_FILES) {
 
 for (const [label, edit] of [
   ['old commands', m => { m.commands = LEGACY_COMMANDS; }],
+  ['superseded commands', m => { m.commands = SUPERSEDED_COMMANDS; }],
   ['missing GPU profile', m => { delete m.safe_profiles.ai; }],
   ['unsafe GPU profile', m => { m.safe_profiles.ai = ['--all']; }],
   ['missing requires', m => { delete m.requires; }],
   ['unknown file with digest', m => { m.files[`${TOOLS}/light_inspect/collectors/cpu.py`] = 'a'.repeat(64); }],
-  ['missing IDC hash', m => { delete m.files[`${TOOLS}/idc`]; }],
+  ['missing IDC hash', m => { delete m.files[`${TOOLS}/idc_inspect`]; }],
   ['wrong architecture', m => { m.arch = 'unknown'; }],
   ['wrong schema', m => { m.schema_version = '2.0'; }],
 ]) {

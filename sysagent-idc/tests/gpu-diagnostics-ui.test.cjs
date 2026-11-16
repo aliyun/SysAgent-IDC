@@ -58,7 +58,7 @@ function state(overrides = {}) {
   snapshot.sampledAt = '2026-11-10T00:00:00Z';
   snapshot.resources.gpu = {
     ...snapshot.resources.gpu, usage: null, source: 'sysak', status: 'unavailable',
-    note: 'IDC 按需 nvidia-smi GPU 快照：驱动或采集权限不可用', sampledAt: snapshot.sampledAt, gpuDevices: undefined,
+    note: 'nvidia-smi GPU 快照不可用：工具、驱动或权限不可用；不代表没有 GPU', sampledAt: snapshot.sampledAt, gpuDevices: undefined,
   };
   return { ...snapshot, ...overrides };
 }
@@ -165,15 +165,21 @@ test('real per-device metrics preserve zero and display missing measurements as 
 
 test('IDC resource GPU reports render on-demand nvidia-smi evidence, independently of native AI', () => {
   const { parseCollectedState } = require('../collected-state.ts');
-  const report = { schema_version: '1.0', tool: 'idc', mode: 'idc', read_only: true, status: 'ok', available: true, gpu_count: 1,
-    devices: [{ index: 0, name: 'IDC fixture GPU', uuid: 'GPU-idc-fixture', bus_id: '0000:01:00.0', util: '0', mem_util_pct: '0',
-      mem_used: '1024', mem_total: '16384', temp: '26', power_draw: '68.65', power_limit: '400', ecc_corr: '0', ecc_uncorr: '0',
-      pcie_gen_max: '4', pcie_gen_cur: '1', pcie_width: '16' }] };
-  const raw = { collection: { finished_at: '2026-11-10T00:00:00Z' }, resources: { gpu: { status: 'ok', content: report } } };
+  // schema 1.1: gpu section data sits beside status/reason (no 1.0 content wrapper)
+  // and uses the numeric idc_inspect field names read by collected-state.ts gpuResource.
+  const raw = { collection: { finished_at: '2026-11-10T00:00:00Z' }, sections: { gpu: {
+    status: 'ok', reason: '', detail: '', available: true, gpu_count: 1,
+    devices: [{ index: 0, name: 'IDC fixture GPU', uuid: 'GPU-idc-fixture', bus_id: '0000:01:00.0', util_pct: 0, mem_util_pct: 0,
+      mem_used_mb: 1024, mem_total_mb: 16384, temp_c: 26, power_draw_w: 68.65, power_limit_w: 400, ecc_corr: 0, ecc_uncorr: 0,
+      pcie_gen_max: 4, pcie_gen_cur: 1, pcie_width: 16 }],
+  } } };
   const snapshot = parseCollectedState(raw, undefined, false, false);
   assert.equal(snapshot.resources.gpu.usage, 0);
+  assert.equal(snapshot.resources.gpu.status, 'available');
+  assert.equal(snapshot.resources.gpu.rows[0].usage, 0, 'zero utilization must survive as a measured row');
+  assert.deepEqual(snapshot.resources.gpu.quantity, { value: 1024 ** 3, unit: 'B', total: 16 * 1024 ** 3, available: 15 * 1024 ** 3 });
   assert.equal(snapshot.gpuDiagnostic.status, 'not_run');
-  assert.match(snapshot.resources.gpu.note, /IDC 按需 nvidia-smi/);
+  assert.match(snapshot.resources.gpu.note, /idc_inspect nvidia-smi/);
   const html = renderToStaticMarkup(harness('../src/GpuDiagnostics.tsx', 'overview').render(uiProps(snapshot)));
   assert.match(html, /IDC fixture GPU/);
   assert.match(html, /GPU-idc-fixture/);

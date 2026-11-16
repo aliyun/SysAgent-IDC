@@ -6,10 +6,11 @@ const path = require('node:path');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { createHash, randomUUID } = require('node:crypto');
+const { randomUUID } = require('node:crypto');
 const ts = require('typescript');
 const { runProcessAction } = require('../electron/process-control.cjs');
 const { CollectorError, createIdcController } = require('../electron/idc-controller.cjs');
+const { rawSnapshot: inspectionSnapshot, sysakInstall } = require('./fixtures.cjs');
 
 // Match the existing health-score tests without generating compiled files.
 require.extensions['.ts'] = (module, filename) => {
@@ -26,9 +27,8 @@ const { parseCollectedState } = require('../collected-state.ts');
 const timestamp = '2026-11-01T12:34:56.000Z';
 const linux = { skip: process.platform !== 'linux', timeout: 5000 };
 const identities = [{ pid: 900101, starttime: 1000 }, { pid: 900202, starttime: 2000 }];
-// Service verification is bypassed only for legacy launch-injection tests; launches/signals stay mocked.
-const launchImpl = (binary, args, opts, spawnImpl) => spawnImpl(binary, args, opts);
-const verifyExecutionImpl = () => {};
+// Collection and process actions both run as the current user: only spawnImpl is injectable.
+// The process-action reply envelope is still schema 1.0 (only collection moved to 1.1).
 const rowId = ({ pid, starttime }) => `process-${pid}-${starttime}`;
 function deferred() {
   let resolve;
@@ -84,7 +84,7 @@ function actionFixture(t, onSpawn, action = 'check', targets = identities, manag
     return child;
   };
   return { child, calls, kills, binary, run: () => runProcessAction(binary, action, targets,
-    { spawnImpl, launchImpl, ...(managerPid === undefined ? {} : { managerPid }) }) };
+    { spawnImpl, ...(managerPid === undefined ? {} : { managerPid }) }) };
 }
 
 test('process action fixes argv/shell/environment and sends ordered identities plus manager PID only through JSON stdin', async t => {
@@ -104,7 +104,7 @@ test('process action fixes argv/shell/environment and sends ordered identities p
     }, action, targets, 990099);
     assert.deepEqual(await fixture.run(), reply.results);
     assert.equal(fixture.calls.length, 1);
-    assert.deepEqual(fixture.calls[0], { file: fixture.binary, argv: ['idc', '--process-action', action], options: {
+    assert.deepEqual(fixture.calls[0], { file: fixture.binary, argv: ['idc_inspect', '--process-action', action], options: {
       cwd: os.tmpdir(), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' },
     } });
@@ -209,6 +209,18 @@ test('process-action fifteen-second deadline kills only a fake child and rejects
   assert.deepEqual(fixture.kills, ['SIGTERM']);
 });
 
+test('an injected shorter deadline is honoured and a late reply is still refused', async t => {
+  const fixture = actionFixture(t, () => {});
+  fixture.child.kill = signal => { fixture.kills.push(signal); return true; };
+  await assert.rejects(runProcessAction(fixture.binary, 'check', identities, {
+    spawnImpl: () => fixture.child, timeoutMs: 20,
+  }), /进程操作超时，结果可能不完整/);
+  assert.deepEqual(fixture.kills, ['SIGTERM']);
+  fixture.child.stdout.write(JSON.stringify(replyFor('check')));
+  fixture.child.finish(0);
+  assert.deepEqual(fixture.kills, ['SIGTERM'], 'a killed child must not be signalled twice');
+});
+
 test('spawn errors, synchronous spawn failure and nonzero/signal exits never accept stdout or expose stderr', async t => {
   await t.test('asynchronous spawn error', async t => {
     const fixture = actionFixture(t, child => { child.emit('error', new Error('private ENOENT')); child.finish(-1); });
@@ -217,7 +229,7 @@ test('spawn errors, synchronous spawn failure and nonzero/signal exits never acc
   });
   await t.test('synchronous spawn throw becomes a rejection', async () => {
     const error = new Error('spawn fixture rejected');
-    await assert.rejects(runProcessAction('/never-run-sysak', 'check', identities, { launchImpl, spawnImpl() { throw error; } }), error);
+    await assert.rejects(runProcessAction('/never-run-sysak', 'check', identities, { spawnImpl() { throw error; } }), error);
   });
   for (const code of [1, 2, null]) await t.test(`exit ${code}`, async t => {
     const fixture = actionFixture(t, child => {
@@ -227,22 +239,21 @@ test('spawn errors, synchronous spawn failure and nonzero/signal exits never acc
     });
     await assert.rejects(fixture.run(), /^Error: sysAK 进程操作不可用$/);
   });
-  for (const [code, message] of [
-    [126, 'sysAK IDC 服务身份或组件校验失败'],
-    [127, 'sysAK IDC 服务身份或组件校验失败'],
-    [75, 'sysAK IDC 服务忙，请稍后重试'],
-  ]) await t.test(`service exit ${code}`, async t => {
+  // 126/127 (identity/component verification) and 75 (service busy) used to be reported by the
+  // removed root helper. As the current user every nonzero exit is one opaque failure: still
+  // fail closed, never accept the stdout reply, never leak stderr and never retry.
+  for (const code of [126, 127, 75]) await t.test(`former service exit ${code}`, async t => {
     const fixture = actionFixture(t, child => {
       child.stdout.write(JSON.stringify(replyFor('check')));
       child.stderr.write('private service details');
       child.finish(code);
     });
     await assert.rejects(fixture.run(), error => {
-      assert.equal(error.message, message);
+      assert.equal(error.message, 'sysAK 进程操作不可用');
       assert.doesNotMatch(error.message, /pkexec|sudo|private/);
       return true;
     });
-    assert.equal(fixture.calls.length, 1, 'service failure must not retry via a user process');
+    assert.equal(fixture.calls.length, 1, 'failure must not retry through another launch path');
     assert.deepEqual(fixture.kills, []);
   });
   await t.test('completed action clears its timeout', async t => {
@@ -261,23 +272,18 @@ test('spawn errors, synchronous spawn failure and nonzero/signal exits never acc
   });
 });
 
-// Raw/API fixtures follow idc-controller.test.cjs; every child and action is injected.
-function rawSnapshot(profile, requestId, targets = identities) {
-  return {
-    schema_version: '1.0', request_id: requestId, collected_at: timestamp,
-    collector: { name: 'sysak', version: '1.0', permissions: { status: 'granted', elevated: false, denied: [] } },
-    collection: { profile, status: 'ok', started_at: timestamp, finished_at: timestamp },
-    capabilities: { read_only: true }, device: { hostname: 'fixture-only' },
-    resources: {
-      cpu: [
-        { status: 'ok', content: 'cpu 100 0 0 900 0 0 0 0\n' },
-        { status: 'ok', content: 'cpu 112 0 0 988 0 0 0 0\n' },
-      ],
-      gpu: { status: 'ok', content: '' },
-      meminfo: { status: 'ok', content: 'MemTotal: 1000 kB\nMemAvailable: 880 kB\n' },
-      processes: { status: 'ok', content: { samples: [{ processes: targets }, { processes: targets }] } },
-    }, configuration: {}, diagnostics: {},
-  };
+// Collection fixtures reuse the shared schema 1.1 envelope; every child and action is injected.
+// annotateProcesses reads identities from the process rankings, io.by_disk/by_vfs and fd.top_procs,
+// so the fixture places the same identities in all of those lists.
+const TARGET_LISTS = [['process', 'top_cpu'], ['process', 'top_rss'], ['process', 'top_sys'],
+  ['process', 'top_blkio_wait'], ['process', 'top_d_state'], ['io', 'by_disk'], ['io', 'by_vfs'], ['fd', 'top_procs']];
+function eachTargetList(raw, mutate) {
+  for (const [name, list] of TARGET_LISTS) if (raw.sections[name]) raw.sections[name][list] = mutate(raw.sections[name][list], name, list);
+  return raw;
+}
+const clearTargets = raw => eachTargetList(raw, () => []);
+function rawSnapshot(requestId, targets = identities) {
+  return eachTargetList(inspectionSnapshot(requestId), () => targets.map(target => ({ ...target, comm: 'fixture-process' })));
 }
 function collectedRow(target = identities[0], extra = {}) {
   return { id: rowId(target), ...target, name: 'untrusted-api-name', detail: `PID ${target.pid}`, usage: 12,
@@ -297,7 +303,7 @@ function processState(revision = 1, targets = identities) {
 }
 function responseFor(body, state) {
   const taskId = randomUUID();
-  return { schema_version: '1.0', request_id: body.request_id, task_id: taskId, mode: 'mock', read_only: true, state,
+  return { schema_version: '1.1', request_id: body.request_id, task_id: taskId, mode: 'mock', read_only: true, state,
     task: { id: taskId, operation: body.operation, status: 'completed', simulated: false, read_only: true } };
 }
 function fakeClock() {
@@ -309,13 +315,11 @@ function fakeClock() {
     clearTimeout(handle) { timers.delete(handle); } };
   return { scheduler, get now() { return now; }, advance(ms) { now += ms; } };
 }
-async function controllerFixture(t, { raw = rawSnapshot, state = revision => processState(revision), action, uninstalled = false } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sysom-process-control-test-'));
-  fs.writeFileSync(path.join(root, 'sysak'), 'inert fixture: never execute\n', { mode: 0o700 });
-  if (!uninstalled) fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
-    schema_version: '1.0', platform: 'linux', arch: process.arch, commands: ['idc', 'resource_anomaly', 'memgraph'],
-    files: { sysak: createHash('sha256').update(fs.readFileSync(path.join(root, 'sysak'))).digest('hex') },
-  }));
+async function controllerFixture(t, { raw = rawSnapshot, state = revision => processState(revision), action, uninstalled = false, componentMissing = false } = {}) {
+  // A fake system installation, never the host's /usr/bin/sysak: resolution must be deterministic.
+  const install = sysakInstall(t);
+  if (componentMissing) fs.rmSync(path.join(install.tools, 'idc_inspect'));
+  const sysakBinary = uninstalled ? path.join(install.root, 'absent-sysak') : install.binary;
   const requests = [];
   const spawns = [];
   const actions = [];
@@ -332,12 +336,11 @@ async function controllerFixture(t, { raw = rawSnapshot, state = revision => pro
     server.closeAllConnections();
     await done;
   }
-  // A single cleanup hook avoids removing the bundle before the queue is settled.
+  // A single cleanup hook avoids removing the installation before the queue is settled.
   t.after(async () => {
     for (const child of children) child.finish(null);
     if (controller) await controller.close();
     await closeApi();
-    fs.rmSync(root, { recursive: true, force: true });
     assert.deepEqual(apiFailures, [], 'mock API must not conceal fixture errors');
   });
   const startMockOpenApi = async ({ token }) => {
@@ -362,14 +365,16 @@ async function controllerFixture(t, { raw = rawSnapshot, state = revision => pro
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     return { baseUrl: `http://127.0.0.1:${server.address().port}`, close: closeApi };
   };
-  controller = await createIdcController({ bundleRoot: root, deviceId: randomUUID(), startMockOpenApi,
-    scheduler: clock.scheduler, launchImpl, verifyExecutionImpl,
+  controller = await createIdcController({ sysakBinary, sysomConfig: null, deviceId: randomUUID(), startMockOpenApi,
+    scheduler: clock.scheduler,
     spawnImpl(binary, argv, options) {
-      assert.deepEqual(argv.slice(0, 2), ['idc', '--profile'], 'process actions must use the injected action mock');
+      assert.equal(binary, install.binary, 'collection must run the resolved sysak binary');
+      assert.deepEqual([argv[0], argv[1], ...argv.slice(3)], ['idc_inspect', '--request-id', '-o', '-'],
+        'process actions must use the injected action mock');
       const child = fakeChild();
       children.push(child);
       spawns.push({ binary, argv, options });
-      setImmediate(() => { child.stdout.write(JSON.stringify(raw(argv[2], argv[4], identities, spawns.length))); child.finish(); });
+      setImmediate(() => { child.stdout.write(JSON.stringify(raw(argv[2], identities, spawns.length))); child.finish(); });
       return child;
     },
     killGroup(pid, signal) {
@@ -414,17 +419,23 @@ test('local annotation overrides both remote true/false flags, checks raw identi
 
 test('missing, invalid, stale, or mismatching raw process identities cannot authorize remote cleanable rows', linux, async t => {
   const cases = [
-    ['missing process evidence', raw => { delete raw.resources.processes; }],
-    ['missing samples', raw => { delete raw.resources.processes.content.samples; }],
-    ['empty samples', raw => { raw.resources.processes.content.samples = []; }],
-    ['nonarray processes', raw => { raw.resources.processes.content.samples.at(-1).processes = {}; }],
-    ['identity only in previous sample', raw => { raw.resources.processes.content.samples.at(-1).processes = []; }],
-    ['missing raw starttime', raw => { raw.resources.processes.content.samples.at(-1).processes = [{ pid: identities[0].pid }]; }],
-    ['raw PID string', raw => { raw.resources.processes.content.samples.at(-1).processes = [{ ...identities[0], pid: String(identities[0].pid) }]; }],
-    ['raw starttime string', raw => { raw.resources.processes.content.samples.at(-1).processes = [{ ...identities[0], starttime: '1000' }]; }],
-    ['raw negative starttime', raw => { raw.resources.processes.content.samples.at(-1).processes = [{ ...identities[0], starttime: -1 }]; }],
-    ['raw unsafe starttime', raw => { raw.resources.processes.content.samples.at(-1).processes = [{ ...identities[0], starttime: Number.MAX_SAFE_INTEGER + 1 }]; }],
-    ['PID recycled in latest sample', raw => { raw.resources.processes.content.samples.at(-1).processes = [{ ...identities[0], starttime: 9999 }]; }],
+    ['no consulted section carries identities', raw => { delete raw.sections.process; delete raw.sections.io; clearTargets(raw); }],
+    ['missing ranking lists', raw => { for (const [name, list] of TARGET_LISTS) delete raw.sections[name][list]; }],
+    ['empty ranking lists', raw => clearTargets(raw)],
+    ['nonarray ranking lists', raw => eachTargetList(raw, () => ({}))],
+    ['null ranking entries', raw => eachTargetList(raw, () => [null])],
+    // schema 1.0 evidence (resources.processes.content.samples) must no longer authorize anything.
+    ['legacy 1.0 process samples are not evidence', raw => {
+      clearTargets(raw);
+      raw.resources = { processes: { status: 'ok', content: { samples: [{ processes: identities }, { processes: identities }] } } };
+    }],
+    ['identity only in an unconsulted section', raw => { clearTargets(raw); raw.sections.network.top_procs = [...identities]; }],
+    ['missing raw starttime', raw => eachTargetList(raw, () => [{ pid: identities[0].pid }])],
+    ['raw PID string', raw => eachTargetList(raw, () => [{ ...identities[0], pid: String(identities[0].pid) }])],
+    ['raw starttime string', raw => eachTargetList(raw, () => [{ ...identities[0], starttime: '1000' }])],
+    ['raw negative starttime', raw => eachTargetList(raw, () => [{ ...identities[0], starttime: -1 }])],
+    ['raw unsafe starttime', raw => eachTargetList(raw, () => [{ ...identities[0], starttime: Number.MAX_SAFE_INTEGER + 1 }])],
+    ['PID recycled since the snapshot', raw => eachTargetList(raw, () => [{ ...identities[0], starttime: 9999 }])],
     ['row PID disagrees with ID', null, state => { state.resources.cpu.rows[0].pid++; }],
     ['row starttime disagrees with ID', null, state => { state.resources.cpu.rows[0].starttime++; }],
     ['row missing starttime', null, state => { delete state.resources.cpu.rows[0].starttime; }],
@@ -433,7 +444,7 @@ test('missing, invalid, stale, or mismatching raw process identities cannot auth
   ];
   for (const [name, mutateRaw, mutateState] of cases) await t.test(name, async t => {
     const fixture = await controllerFixture(t, {
-      raw(profile, requestId) { const raw = rawSnapshot(profile, requestId); mutateRaw?.(raw); return raw; },
+      raw(requestId) { const raw = rawSnapshot(requestId); mutateRaw?.(raw); return raw; },
       state(revision) { const state = healthState(revision); state.resources.cpu.rows = [collectedRow()]; mutateState?.(state); return state; },
     });
     const state = await fixture.controller.snapshot();
@@ -444,11 +455,24 @@ test('missing, invalid, stale, or mismatching raw process identities cannot auth
   });
   for (const pid of [0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) await t.test(`invalid/reserved PID ${pid}`, async t => {
     const target = { pid, starttime: 0 };
-    const fixture = await controllerFixture(t, { raw: (profile, requestId) => rawSnapshot(profile, requestId, [target]),
+    const fixture = await controllerFixture(t, { raw: requestId => rawSnapshot(requestId, [target]),
       state: revision => processState(revision, [target]) });
     const state = await fixture.controller.snapshot();
     assert(state.resources.cpu.rows.every(row => !row.cleanable));
     assert.deepEqual(fixture.actions, []);
+  });
+});
+
+test('every consulted 1.1 ranking list can authorize identities on its own', linux, async t => {
+  for (const [name, list] of TARGET_LISTS) await t.test(`${name}.${list}`, async t => {
+    const fixture = await controllerFixture(t, { raw(requestId) {
+      const raw = clearTargets(rawSnapshot(requestId));
+      raw.sections[name][list] = identities.map(target => ({ ...target, comm: 'fixture-process' }));
+      return raw;
+    } });
+    const state = await fixture.controller.snapshot();
+    assert.deepEqual(fixture.actions, [{ action: 'check', targets: identities }]);
+    for (const id of ['cpu', 'memory', 'disk']) assert(state.resources[id].rows.every(row => row.cleanable));
   });
 });
 
@@ -473,7 +497,7 @@ test('identity validation is per row even when another resource has a valid row 
 test('annotation is bounded to 100 unique raw targets, and process-action unavailability fails closed', linux, async t => {
   await t.test('100-target bound', async t => {
     const targets = Array.from({ length: 101 }, (_, index) => ({ pid: 910000 + index, starttime: index }));
-    const fixture = await controllerFixture(t, { raw: (profile, requestId) => rawSnapshot(profile, requestId, targets),
+    const fixture = await controllerFixture(t, { raw: requestId => rawSnapshot(requestId, targets),
       state: revision => processState(revision, targets) });
     const state = await fixture.controller.snapshot();
     assert.equal(fixture.actions.length, 1);
@@ -542,7 +566,7 @@ test('prepare validates payload, allowed resource/IDs/count and current revision
   assert.equal(fixture.requests.length, 1);
   await t.test('ten selected identities are accepted', async t => {
     const targets = Array.from({ length: 10 }, (_, index) => ({ pid: 920000 + index, starttime: index }));
-    const fixture = await controllerFixture(t, { raw: (profile, requestId) => rawSnapshot(profile, requestId, targets),
+    const fixture = await controllerFixture(t, { raw: requestId => rawSnapshot(requestId, targets),
       state: revision => processState(revision, targets) });
     const state = await fixture.controller.snapshot();
     const plan = await prepare(fixture.controller, state, 'cpu', targets.map(rowId));
@@ -631,15 +655,18 @@ test('execute rejects malformed/wrong tokens and caller-supplied identities with
   assert.equal(fixture.actions.length, 3);
 });
 
-test('cold, uninstalled, paused and closed controllers forbid prepare/execute; resume cannot restore old plans', linux, async t => {
-  for (const phase of ['cold', 'uninstalled', 'paused', 'closed']) await t.test(phase, async t => {
-    const fixture = await controllerFixture(t, { uninstalled: phase === 'uninstalled' });
+test('cold, uninstalled, component-missing, paused and closed controllers forbid prepare/execute; resume cannot restore old plans', linux, async t => {
+  for (const phase of ['cold', 'uninstalled', 'component-missing', 'paused', 'closed']) await t.test(phase, async t => {
+    const fixture = await controllerFixture(t, { uninstalled: phase === 'uninstalled', componentMissing: phase === 'component-missing' });
     const state = ['paused', 'closed'].includes(phase) ? await fixture.controller.snapshot() : { revision: 1 };
     const plan = ['paused', 'closed'].includes(phase) ? await prepare(fixture.controller, state) : { token: 'a'.repeat(64) };
     if (phase === 'paused') fixture.controller.setEnabled(false);
     if (phase === 'closed') await fixture.controller.close();
-    const code = phase === 'cold' ? 'SNAPSHOT_REQUIRED' : phase === 'uninstalled' ? 'COLLECTOR_UNAVAILABLE' : 'COLLECTOR_DISABLED';
-    const status = phase === 'uninstalled' ? 503 : 409;
+    // Resolution failures now surface resolveSysak's own code instead of the old bundle verdict.
+    const code = phase === 'cold' ? 'SNAPSHOT_REQUIRED' : phase === 'uninstalled' ? 'SYSAK_NOT_FOUND' :
+      phase === 'component-missing' ? 'SYSAK_COMPONENT_MISSING' : 'COLLECTOR_DISABLED';
+    const status = ['uninstalled', 'component-missing'].includes(phase) ? 503 : 409;
+    if (['uninstalled', 'component-missing'].includes(phase)) assert.equal(fixture.controller.status().installed, false);
     const before = fixture.actions.length;
     await assert.rejects(prepare(fixture.controller, state), errorIs(code, status));
     await assert.rejects(fixture.controller.executeProcessCleanup({ token: plan.token }), errorIs(code, status));
@@ -766,7 +793,7 @@ test('cleanup tokens are scoped to the issuing controller', linux, async t => {
 test('execution retains sysAK revalidation outcomes instead of claiming every selected process was signalled', linux, async t => {
   const targets = Array.from({ length: 6 }, (_, index) => ({ pid: 930000 + index, starttime: index }));
   const statuses = ['signalled', 'protected', 'permission_denied', 'stale', 'gone', 'unsupported'];
-  const fixture = await controllerFixture(t, { raw: (profile, requestId) => rawSnapshot(profile, requestId, targets),
+  const fixture = await controllerFixture(t, { raw: requestId => rawSnapshot(requestId, targets),
     state: revision => processState(revision, targets), action(verb, targets) {
       return verb === 'check' ? resultsFor(verb, targets) : targets.map((target, index) => resultsFor(verb, [target], statuses[index])[0]);
     } });
@@ -893,19 +920,18 @@ test('collectedRankingRows filters Agents before Top10, sorts by usage then PID 
 
 test('raw parser retains recognized Agents outside the overall Top20 for CPU/memory/disk, bounded to 20 extra Agents', () => {
   const genericNames = ['node', 'python3', 'constructor', 'toString', 'my-qoder'];
-  const makeProcess = (index, second) => {
+  // 1.1 already carries per-process rates: cpu_pct_node, rss_kb and disk_bytes_per_sec.
+  const makeProcess = index => {
     const agent = index >= 25;
     const weight = agent ? 30 - (index - 25) : 100 - index;
     return { pid: 960000 + index, starttime: index, comm: agent ? (index % 2 ? 'QODER' : 'claude') : genericNames[index % genericNames.length],
-      utime: second ? weight : 0, stime: 0, rss_bytes: weight * 1000, io_status: 'ok',
-      io: { read_bytes: second ? weight * 1000 : 0, write_bytes: 0 } };
+      cpu_pct_node: weight, rss_kb: weight * 10000, disk_bytes_per_sec: weight * 1000 };
   };
-  const raw = rawSnapshot('resources', randomUUID(), []);
-  raw.resources.cpu_count = { status: 'ok', content: 1 };
-  raw.resources.processes = { status: 'ok', content: { clock_ticks: 100, samples: [
-    { monotonic_seconds: 10, processes: Array.from({ length: 50 }, (_, index) => makeProcess(index, false)) },
-    { monotonic_seconds: 12, processes: Array.from({ length: 50 }, (_, index) => makeProcess(index, true)) },
-  ] } };
+  const processes = Array.from({ length: 50 }, (_, index) => makeProcess(index));
+  const raw = rawSnapshot(randomUUID(), []);
+  raw.sections.process.top_cpu = processes;
+  raw.sections.process.top_rss = processes;
+  raw.sections.io.by_disk = processes;
   const state = parseCollectedState(raw, undefined, false, false);
   for (const id of ['cpu', 'memory', 'disk']) {
     const resource = state.resources[id];

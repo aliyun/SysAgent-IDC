@@ -8,18 +8,22 @@ import { type AgentDiagnostic } from './src/agent-diagnostics-data';
 
 export { summarizeHealth, buildHealthReport } from './src/health-data';
 
-const SCHEMA_VERSION = '1.0';
+const SCHEMA_VERSION = '1.1';
+// AgentSight 证据是独立契约，仍为 1.0，不随 sysAK 采集升级。
+const AGENT_SCHEMA_VERSION = '1.0';
 const REQUEST_LIMIT = 10 * 1024 * 1024;
 const RAW_LIMIT = 8 * 1024 * 1024;
 const DEVICE_LIMIT = 32;
 const RESULT_LIMIT = 100;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// 预发上传成功后，sysAK 用服务端 32 位 hex inspection_id 覆盖 request_id。
+const INSPECTION_ID = /^[0-9a-f]{32}$/i;
+const CORE_SECTIONS = ['cpu', 'memory', 'disk', 'fd'] as const;
 const operations = [
   'snapshot', 'reset', 'inspect', 'cleanup', 'optimize',
   'sessions-cleanup', 'alert-sample',
 ] as const;
 type Operation = typeof operations[number];
-type Profile = 'resources' | 'inspection';
 type JsonObject = Record<string, unknown>;
 interface Permissions {
   status: 'granted' | 'partial' | 'denied';
@@ -28,10 +32,10 @@ interface Permissions {
 }
 interface Receipt {
   raw_bytes: number;
-  profile: Profile;
+  profile: 'inspection';
   collected_at: string;
   collection_status: 'ok' | 'partial';
-  collector: { name: 'sysak'; version?: string; permissions?: Permissions };
+  collector: { name: 'sysak'; command: 'idc_inspect'; version?: string; permissions?: Permissions };
   device: { id: string };
 }
 interface Task {
@@ -42,7 +46,7 @@ interface Task {
   read_only: true;
 }
 interface CollectionResponse {
-  schema_version: '1.0';
+  schema_version: '1.1';
   request_id: string;
   task_id: string;
   mode: 'mock';
@@ -81,8 +85,8 @@ function keys(value: JsonObject, allowed: readonly string[]) {
 function string(value: unknown, max = 128): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max * 2 && [...value].length <= max;
 }
-function profileFor(operation: Operation): Profile {
-  return operation === 'inspect' ? 'inspection' : 'resources';
+function evidenceId(value: unknown): value is string {
+  return uuid(value) || typeof value === 'string' && INSPECTION_ID.test(value);
 }
 function timestamp(value: unknown): value is string {
   if (typeof value !== 'string') return false;
@@ -197,21 +201,26 @@ function rawBytes(text: string): number {
   return size;
 }
 
-function receiptFor(raw: unknown, requestId: string, deviceId: string, operation: Operation, size: number): Receipt {
+function receiptFor(raw: unknown, requestId: string, deviceId: string, size: number): Receipt {
   if (!object(raw) || raw.schema_version !== SCHEMA_VERSION || raw.request_id !== requestId) {
     fail('Invalid raw_snapshot version or request_id');
   }
-  if (!object(raw.collection) || raw.collection.profile !== profileFor(operation) ||
-      !['ok', 'partial', 'error'].includes(raw.collection.status as string)) {
+  if (!object(raw.collection) || raw.collection.profile !== 'inspection' ||
+      !['ok', 'partial', 'failed'].includes(raw.collection.status as string)) {
     fail('Invalid collection profile or status');
   }
-  if (!object(raw.resources) || !object(raw.configuration) || !object(raw.diagnostics) ||
-      !object(raw.collector) || raw.collector.name !== 'sysak' || !object(raw.device) ||
+  if (!object(raw.host) || !object(raw.device) ||
+      !object(raw.collector) || raw.collector.name !== 'sysak' || raw.collector.command !== 'idc_inspect' ||
       !object(raw.capabilities) || raw.capabilities.read_only !== true) {
-    fail('raw_snapshot requires sysak collector, device, read-only capabilities, and structured sections');
+    fail('raw_snapshot requires sysak idc_inspect collector, host, device and read-only capabilities');
   }
+  const sections = raw.sections;
+  if (!object(sections) || !CORE_SECTIONS.every((name) => object(sections[name]))) {
+    fail('raw_snapshot requires cpu, memory, disk and fd sections');
+  }
+  if (raw.diagnostics !== undefined && !object(raw.diagnostics)) fail('Invalid diagnostics');
   if (!timestamp(raw.collection.finished_at)) fail('Invalid collection.finished_at timestamp');
-  const collector: Receipt['collector'] = { name: 'sysak' };
+  const collector: Receipt['collector'] = { name: 'sysak', command: 'idc_inspect' };
   if (raw.collector.version !== undefined) {
     if (!string(raw.collector.version)) fail('Invalid collector version');
     collector.version = raw.collector.version;
@@ -232,11 +241,11 @@ function receiptFor(raw: unknown, requestId: string, deviceId: string, operation
       ...(permissions.denied !== undefined ? { denied: permissions.denied as string[] } : {}),
     };
   }
-  if (raw.collection.status === 'error') {
+  if (raw.collection.status === 'failed') {
     throw new ApiError(503, 'collection_failed', 'Collector reported an error; no state was changed', true);
   }
   return {
-    raw_bytes: size, profile: profileFor(operation), collected_at: raw.collection.finished_at,
+    raw_bytes: size, profile: 'inspection', collected_at: raw.collection.finished_at,
     collection_status: raw.collection.status as 'ok' | 'partial',
     collector, device: { id: deviceId },
   };
@@ -269,6 +278,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
 
   async function handle(request: IncomingMessage, response: ServerResponse) {
     let requestId: string | undefined;
+    let responseSchema: string = SCHEMA_VERSION;
     try {
       const match = /^Bearer ([\x21-\x7e]+)$/i.exec(request.headers.authorization ?? '');
       // Hashes always have equal length, including absent/wrong-length tokens.
@@ -283,6 +293,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
       const deviceRoute = /^\/openapi\/v1\/devices\/([^/]+)\/snapshot$/.exec(path);
       const taskRoute = /^\/openapi\/v1\/tasks\/([^/]+)$/.exec(path);
       const agentRoute = path === '/openapi/v1/agent-diagnostics';
+      if (agentRoute) responseSchema = AGENT_SCHEMA_VERSION;
       const known = path === '/openapi/v1/collections' || agentRoute || path === '/openapi/v1/capabilities' ||
         path === '/openapi/v1/openapi.json' || deviceRoute || taskRoute;
       if (!known) throw new ApiError(404, 'not_found', 'Route not found');
@@ -295,7 +306,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
       if (path === '/openapi/v1/capabilities') {
         send(response, 200, {
           schema_version: SCHEMA_VERSION, api_version: 'v1', mode: 'mock', read_only: true,
-          collection: { collector: 'sysak', profiles: ['resources', 'inspection'], arbitrary_commands: false },
+          collection: { collector: 'sysak', command: 'idc_inspect', profiles: ['inspection'], arbitrary_commands: false },
           demo_operations: [], collection_operations: ['snapshot', 'reset', 'inspect'], destructive_actions_enabled: false,
           agent_diagnostics: {
             route: '/openapi/v1/agent-diagnostics', method: 'POST', source: 'agentsight', operation: 'agent-diagnose',
@@ -323,7 +334,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
       }
       const { value, text, digest } = await readBody(request);
       if (!object(value)) fail('Request must be a JSON object');
-      if (uuid(value.request_id)) requestId = value.request_id;
+      if (evidenceId(value.request_id)) requestId = value.request_id;
       const cached = requestId ? results.get(requestId.toLowerCase()) : undefined;
       if (cached) {
         if (cached.digest !== digest || cached.route !== path) throw new ApiError(409, 'idempotency_conflict', 'request_id was already used with another payload or route');
@@ -333,7 +344,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
       const size = rawBytes(text);
       if (agentRoute) {
         keys(value, ['schema_version', 'request_id', 'device_id', 'raw_snapshot']);
-        if (value.schema_version !== SCHEMA_VERSION || !requestId || !uuid(value.device_id)) fail('Invalid schema version or UUID');
+        if (value.schema_version !== AGENT_SCHEMA_VERSION || !requestId || !uuid(value.device_id)) fail('Invalid schema version or UUID');
         let report: AgentDiagnostic;
         try { report = parseAgentDiagnostic(value.raw_snapshot); }
         catch (error) {
@@ -343,7 +354,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
         const taskId = randomUUID();
         const task: Task = { id: taskId, status: 'completed', operation: 'agent-diagnose', simulated: false, read_only: true };
         const result: AgentDiagnosticResponse = {
-          schema_version: SCHEMA_VERSION, request_id: requestId, task_id: taskId,
+          schema_version: AGENT_SCHEMA_VERSION, request_id: requestId, task_id: taskId,
           mode: 'mock', read_only: true, report, task,
         };
         // Independent evidence: never reads, allocates or revises a SysAK device snapshot.
@@ -369,7 +380,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
       if (!['snapshot', 'reset', 'inspect'].includes(operation)) throw new ApiError(409, 'read_only', '真实采集数据为只读，不支持清理、优化或模拟改值');
       keys(parameters, ['revision', 'hasGpu']);
       if (parameters.hasGpu !== undefined && typeof parameters.hasGpu !== 'boolean') fail('hasGpu must be boolean');
-      const receipt = receiptFor(value.raw_snapshot, requestId, value.device_id, operation, size);
+      const receipt = receiptFor(value.raw_snapshot, requestId, value.device_id, size);
       if (!previous && devices.size >= DEVICE_LIMIT) throw new ApiError(503, 'device_capacity', 'Device capacity reached', true);
       const next = parseCollectedState(value.raw_snapshot as JsonObject, previous?.state, operation === 'inspect', operation === 'reset');
       const taskId = randomUUID();
@@ -387,7 +398,7 @@ export async function startMockOpenApi({ token, port = 0 }: { token: string; por
       request.resume();
       const apiError = error instanceof ApiError ? error : new ApiError(503, 'service_unavailable', 'Mock service unavailable', true);
       send(response, apiError.status, {
-        schema_version: SCHEMA_VERSION,
+        schema_version: responseSchema,
         ...(requestId ? { request_id: requestId } : {}),
         error: { code: apiError.code, message: apiError.message, retryable: apiError.retryable },
       });

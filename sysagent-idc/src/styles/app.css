@@ -8,6 +8,18 @@
 .sh-inspection-setting > button { display: inline-flex; align-items: center; gap: 5px; color: #4b69ed; font-size: 13px; font-weight: 600; }
 .sh-inspection-setting > time { color: #344367; font-size: 12px; line-height: 1.6; text-align: right; }
 .sh-inspection-config-error { margin-top: 12px; color: #bf4949; font-size: 12px; }
+.sh-collector-source { margin-top: 12px; overflow: hidden; border: 1px solid #e1e8f4; border-radius: 12px; background: #f8faff; text-align: left; }
+.sh-collector-source .sh-inspection-setting + .sh-inspection-setting { border-top: 1px solid #e8edf6; }
+.sh-collector-name { color: #344367; font-size: 12px; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.sh-collector-path { padding: 0 16px 12px; margin: -6px 0 0; color: #93a1b8; font-size: 11px; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.sh-collection-status { color: #344367; font-size: 12px; text-align: right; }
+.sh-collection-status.partial { color: #b07a2e; }
+.sh-coverage { padding: 12px 16px 14px; border-top: 1px solid #e8edf6; }
+.sh-coverage-summary { display: block; color: #76829b; font-size: 12px; }
+.sh-coverage-degraded { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.sh-coverage-degraded li { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
+.sh-coverage-degraded b { color: #4b5b76; font-weight: 600; flex-shrink: 0; }
+.sh-coverage-degraded span { color: #b07a2e; overflow-wrap: anywhere; }
 .sh-unavailable .sh-inspection-entry { display: flex; margin: 0 0 20px auto; }
 .sh-interval-form { text-align: left; }
 .sh-interval-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -2600,6 +2612,18 @@ td:last-child {
   color: #a5b5cb;
   margin-top: 5px;
 }
+.sh-level-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.sh-level-badge.normal { background: #f0f8f3; color: #4f9a6f; }
+.sh-level-badge.suggestion { background: #eef3fb; color: #5b7fc0; }
+.sh-level-badge.warning { background: #fdf7ee; color: #b07a2e; }
+.sh-level-badge.error { background: #fbeffb; color: #a04fa0; }
+.sh-level-badge.critical { background: #fdeeee; color: #bf4949; }
+.sh-cloud-report { text-align: left; }
+.sh-cloud-report-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding-bottom: 14px; border-bottom: 1px solid #e8edf6; color: #657a9d; font-size: 12px; }
+.sh-cloud-report-scope { margin: 12px 0 0; color: #76829b; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.sh-cloud-report-empty { margin: 16px 0 0; color: #93a1b8; font-size: 12px; }
+.sh-cloud-report-items { margin-top: 4px; }
+.sh-cloud-report-items .report-item:last-child { border-bottom: 0; }
 .detail-device {
   display: flex;
   align-items: center;
@@ -6776,11 +6800,6 @@ body {
   margin-left: 3px;
   font-weight: 400;
 }
-.sh-score-ring > div > span {
-  font-size: 10px;
-  color: #8293a7;
-  margin-top: 8px;
-}
 .sh-optimize-button {
   display: inline-flex;
   justify-content: center;
@@ -7652,9 +7671,6 @@ body {
 .sh-report-header .sh-score-ring strong {
   font-size: 29px;
 }
-.sh-report-header .sh-score-ring > div > span {
-  font-size: 8px;
-}
 .sh-report-header h3 {
   font-size: 18px;
   color: #728caf;
@@ -7842,9 +7858,6 @@ body {
   .sh-score-ring strong {
     font-size: 35px;
   }
-  .sh-score-ring > div > span {
-    font-size: 9px;
-  }
   .sh-optimize-button {
     margin-top: 0;
     min-width: 140px;
@@ -8013,9 +8026,6 @@ body {
   }
   .sh-report-header .sh-score-ring strong {
     font-size: 24px;
-  }
-  .sh-report-header .sh-score-ring > div > span {
-    font-size: 6px;
   }
   .sh-report-header h3 {
     font-size: 15px;

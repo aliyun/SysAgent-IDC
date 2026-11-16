@@ -1,8 +1,67 @@
 import type { AlertTarget, HealthState, ResourceId } from './health-data';
 
+export interface SectionCoverage {
+  name: string;
+  status: string;
+  reason: string;
+}
+
+export interface CollectorInfo {
+  name: 'sysak';
+  command: string;
+  schema_version: string;
+  binary: string | null;
+  source: 'system' | 'override' | null;
+  version: string | null;
+}
+
+export interface CollectionSummary {
+  schema_version: string;
+  command: string;
+  version: string | null;
+  status: string;
+  collected_at: string;
+  duration_ms: number | null;
+  sections: SectionCoverage[];
+}
+
+export interface CloudInspectionReportItem {
+  itemName: string;
+  level: string;
+  reason?: string;
+  affectedInstances?: number;
+  maxValue?: number | null;
+  unit?: string;
+}
+
+export interface CloudInspectionReport {
+  reportVersion: string;
+  reportId: string;
+  name?: string;
+  status: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  scope?: { scopeType?: string; hostname?: string; deviceId?: string; inspectionId?: string; window?: string; profile?: string; targetCount?: number };
+  summary?: { overallLevel?: string; totalItems?: number; abnormalItems?: number; totalInstances?: number; abnormalInstances?: number };
+  itemSummaries?: CloudInspectionReportItem[];
+  instanceResults?: { instance: string; level: string; reasons?: string[] }[];
+}
+
+export interface CloudInspection {
+  inspectionId: string;
+  status: string;
+  phase: string | null;
+  progress: number;
+  reportId: string | null;
+  reportStatus: string | null;
+  report: CloudInspectionReport | null;
+  error: { code: string; message: string } | null;
+  updatedAt: string;
+}
+
 export interface CollectorStatus {
   schema_version: string;
-  mode: 'mock' | 'offline-demo';
+  mode: 'mock' | 'pre' | 'offline-demo';
   read_only: boolean;
   device_id: string;
   installed: boolean;
@@ -33,7 +92,12 @@ export interface CollectorStatus {
     raw_bytes: number;
     collected_at: string;
     simulated: boolean;
+    uploaded: boolean;
+    inspection_id?: string;
   };
+  collector: CollectorInfo | null;
+  collection: CollectionSummary | null;
+  cloud_inspection: CloudInspection | null;
   error: null | { code: string; message: string };
 }
 
@@ -144,9 +208,10 @@ function isOfflineDemo() {
 
 export async function fetchCollectorStatus(): Promise<CollectorStatus> {
   if (isOfflineDemo()) {
-    return { schema_version: '1.0', mode: 'offline-demo', read_only: true, device_id: '', installed: false, enabled: false,
+    return { schema_version: '1.1', mode: 'offline-demo', read_only: true, device_id: '', installed: false, enabled: false,
       inspection_interval_minutes: 5, next_inspection_at: null,
-      phase: 'unsupported', api_version: '1.0', last_task: null, error: null };
+      phase: 'unsupported', api_version: '1.0', last_task: null,
+      collector: null, collection: null, cloud_inspection: null, error: null };
   }
   const desktop = window.sysomDesktop;
   return desktop?.collectorStatus ? decode(await desktop.collectorStatus()) : webRequest('status');

@@ -18,7 +18,7 @@ interface Controller {
   setInspectionInterval(minutes: unknown): unknown;
 }
 const { createIdcController, CollectorError } = require('./electron/idc-controller.cjs') as {
-  createIdcController(options: { bundleRoot: string; settingsPath: string; startMockOpenApi: typeof startMockOpenApi }): Promise<Controller>;
+  createIdcController(options: { settingsPath: string; startMockOpenApi: typeof startMockOpenApi }): Promise<Controller>;
   CollectorError: new (code: string, message: string, status: number) => Error & { code: string; status: number; retryable: boolean };
 };
 const routes = new Set(['snapshot', 'agent-diagnostic', 'reset', 'operations', 'status', 'enabled', 'interval', 'process-prepare', 'process-execute']);
@@ -26,7 +26,6 @@ const routes = new Set(['snapshot', 'agent-diagnostic', 'reset', 'operations', '
 export function demoApi(): Plugin {
   const attach = (server: ViteDevServer | PreviewServer) => {
     const controller = createIdcController({
-      bundleRoot: fileURLToPath(new URL('./resources/sysak', import.meta.url)),
       settingsPath: fileURLToPath(new URL('./resources/idc-settings.json', import.meta.url)),
       startMockOpenApi,
     });

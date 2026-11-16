@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronRight, Clock3, History, LoaderCircle, Pause, Play, Power } from 'lucide-react';
+import { ChevronRight, Clock3, Cpu, History, LoaderCircle, Pause, Play, Power } from 'lucide-react';
 import { Modal } from './components';
 import { localTime } from '../agent-diagnostics';
 import { fetchCollectorStatus, setCollectorEnabled, setInspectionInterval, type CollectorStatus } from './idc-client';
@@ -179,7 +179,14 @@ export function CollectionStatus({ open, onClose, lastInspectionAt, busy, onRefr
   const nextInspection = formatInspectionTime(status?.next_inspection_at ?? null);
   const scheduleLabel = !status ? '正在读取' : unavailable ? '暂不可用' : !status.enabled ? '已暂停' :
     nextInspection || (collecting ? '巡检完成后安排' : '等待安排');
-  const previousInspection = formatInspectionTime(status?.last_task?.profile === 'inspection' ? status.last_task.collected_at : lastInspectionAt) || '暂无巡检';
+  const previousInspection = formatInspectionTime(status?.last_task?.operation === 'inspect' ? status.last_task.collected_at : lastInspectionAt) || '暂无巡检';
+  const collector = status?.collector ?? null;
+  const collection = status?.collection ?? null;
+  const sections = collection?.sections ?? [];
+  const degraded = sections.filter(section => section.status !== 'ok' && section.status !== 'partial');
+  const sourceLabel = offline ? '离线演示 · 不执行本地采集' :
+    !collector?.binary ? '未找到已安装的 sysAK' :
+    `sysak ${collector.command}${collector.version ? ` · v${collector.version}` : ''}`;
 
   return <Modal title="巡检配置" onClose={() => { if (!inFlight.current) onClose(); }}>
     <section className="sh-inspection-config" aria-label="巡检设置">
@@ -204,6 +211,29 @@ export function CollectionStatus({ open, onClose, lastInspectionAt, busy, onRefr
         <span><History size={15} />上次巡检</span>
         <time>{previousInspection}</time>
       </div>
+    </section>
+    <section className="sh-collector-source" aria-label="采集来源">
+      <div className="sh-inspection-setting">
+        <span><Cpu size={15} />采集来源</span>
+        <span className="sh-collector-name" title={collector?.binary ?? undefined}>{sourceLabel}</span>
+      </div>
+      {collector?.binary && <p className="sh-collector-path">{collector.binary}</p>}
+      {collection && <div className="sh-inspection-setting">
+        <span><History size={15} />最近采集</span>
+        <span className={`sh-collection-status ${collection.status}`}>
+          {collection.status === 'ok' ? '完整' : '部分'} · {formatInspectionTime(collection.collected_at) || '未知时间'}
+          {collection.duration_ms !== null ? ` · ${Math.round(collection.duration_ms)} ms` : ''}
+        </span>
+      </div>}
+      {sections.length > 0 && <div className="sh-coverage" aria-label="采集覆盖">
+        <span className="sh-coverage-summary">{sections.length} 个采集段 · {sections.length - degraded.length} 个可用</span>
+        {degraded.length > 0 && <ul className="sh-coverage-degraded">
+          {degraded.map(section => <li key={section.name}>
+            <b>{section.name}</b>
+            <span>{section.status}{section.reason ? ` · ${section.reason}` : ''}</span>
+          </li>)}
+        </ul>}
+      </div>}
     </section>
     {error && <p className="sh-inspection-config-error" role="alert">{error}</p>}
   </Modal>;

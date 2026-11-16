@@ -33,9 +33,8 @@ UNAVAILABLE = 'ROOT_COLLECTOR_UNAVAILABLE'
 BUSY = 'ROOT_SERVICE_BUSY'
 TOO_LARGE = 'COLLECTION_TOO_LARGE'
 HASH = re.compile(r'[0-9a-f]{64}\Z')
-UUID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z', re.I)
 TOOLS = '.sysak_components/tools'
-COMMANDS = ('idc', 'resource_anomaly', 'memgraph', 'ai')
+COMMANDS = ('idc_inspect', 'resource_anomaly', 'memgraph', 'ai')
 SAFE_PROFILES = {'resource_anomaly': ['--idc'], 'memgraph': ['--graph', '--jsonstdout'], 'ai': ['--threshold', '1s']}
 MODULES = (
     'resource_anomaly_idc', 'fdleak_metrics',
@@ -131,7 +130,7 @@ def check_budget(deadline, stop=None):
         raise Expired()
 
 
-def validate_request(raw, peer_pid):
+def validate_request(raw):
     if len(raw) > REQUEST_LIMIT:
         raise Rejected()
     try:
@@ -143,35 +142,24 @@ def validate_request(raw, peer_pid):
                 any(type(arg) is not str or '\0' in arg for arg in args) or
                 sum(len(arg.encode('utf-8')) for arg in args) > 16384):
             raise Rejected()
-        collection = (len(args) == 7 and args[:2] == ['idc', '--profile'] and
-                      args[2] in ('resources', 'inspection') and args[3] == '--request-id' and
-                      UUID.fullmatch(args[4]) and args[5:] == ['-o', '-'])
-        action = (len(args) == 3 and args[:2] == ['idc', '--process-action'] and
-                  args[2] in ('check', 'terminate'))
+        # root 服务只接受 AgentSight 采集控制；资源采集与进程操作由当前用户直接调用系统 sysak。
         agent_collection = (len(args) == 3 and args[:2] == ['idc', '--agent-collection'] and
                             args[2] in ('status', 'ensure', 'disable'))
-        if not (collection or action or agent_collection):
+        if not agent_collection:
             raise Rejected()
         if type(request['stdin']) is not str or '\0' in request['stdin']:
             raise Rejected()
         payload = request['stdin'].encode('utf-8')
-        if (collection or agent_collection) and payload:
+        if payload:
             raise Rejected()
-        if action:
-            body = strict_json(request['stdin'])
-            if (type(body) is not dict or set(body) != {'manager_pid', 'targets'} or
-                    type(body['manager_pid']) is not int or body['manager_pid'] != peer_pid or
-                    type(body['targets']) is not list):
-                raise Rejected()
-            # Target identity/eligibility is validated only by the native IDC parser.
         if type(request['manifest_sha256']) is not str or not HASH.fullmatch(request['manifest_sha256']):
             raise Rejected()
         if type(request['deadline']) is not int:
             raise Rejected()
         remaining = request['deadline'] / 1000 - time.time()
-        if not 0 < remaining <= (15 if action else 35):
+        if not 0 < remaining <= 35:
             raise Rejected()
-        return request, time.monotonic() + remaining, (10 if action else 30), payload
+        return request, time.monotonic() + remaining, 30, payload
     except (OverflowError, UnicodeError):
         raise Rejected() from None
 
@@ -532,7 +520,7 @@ class Service:
             peer = authenticate(conn, self.uid)  # Always before JSON or bundle IO.
             peerfd = peer[3]
             raw = read_request(conn, peerfd, self.stop)
-            request, deadline, limit, payload = validate_request(raw, peer[1])
+            request, deadline, limit, payload = validate_request(raw)
             locked = self.execution.acquire(blocking=False)
             if not locked:
                 terminal(conn, 75, BUSY)

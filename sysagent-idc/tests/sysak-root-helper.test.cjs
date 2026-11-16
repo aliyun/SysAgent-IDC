@@ -16,17 +16,17 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 NOW, MONO, PID, CHILD, PEERFD, CHILDFD = 1793536496, 500, 990099, 880088, 91, 92
 TOOLS = '.sysak_components/tools'
-COMMANDS = ['idc', 'resource_anomaly', 'memgraph', 'ai']
+COMMANDS = ['idc_inspect', 'resource_anomaly', 'memgraph', 'ai']
 PROFILES = {'resource_anomaly': ['--idc'], 'memgraph': ['--graph', '--jsonstdout'], 'ai': ['--threshold', '1s']}
 MODULES = ['resource_anomaly_idc', 'fdleak_metrics', 'plugin_abnormalPackages', 'plugin_anonTaskTop', 'plugin_cache',
            'plugin_memcgLeak', 'plugin_memfrag', 'plugin_memgraph', 'plugin_meminfo', 'plugin_memleak', 'plugin_podDetect',
            'plugin_system', 'plugin_taskProc', 'plugin_vmRssTaskTop', 'plugin_skcheck', 'plugin_appmem', 'mem_utils', 'plugin_thpCollect']
 FILES = {'sysak', TOOLS+'/.sysak.rules', *[TOOLS+'/'+name for name in COMMANDS], *[TOOLS+'/'+name+'.py' for name in MODULES]}
 DIRECTORIES = {'', '.sysak_components', TOOLS}
-COLLECTOR = TOOLS+'/idc'
+COLLECTOR = TOOLS+'/idc_inspect'
 AI = TOOLS+'/ai'
 RULES = TOOLS+'/.sysak.rules'
-CANONICAL_RULES = ('detect/generic:idc:python-dep{python3}:help{idc}\n'
+CANONICAL_RULES = ('detect/generic:idc_inspect:python-dep{python3}:help{idc_inspect}\n'
                    'detect/generic:resource_anomaly:python-dep{python3}:help{resource_anomaly --idc only}\n'
                    'detect/mem:memgraph:python-dep{python3}:help{memgraph --graph --jsonstdout}\n'
                    'generic:ai::help{GPU AI diagnostics}\n')
@@ -36,7 +36,13 @@ def mock_elf(machine=None):
     struct.pack_into('<HHI', data, 16, 3, machine or {'x86_64':62,'aarch64':183}[m.os.uname().machine], 1)
     struct.pack_into('<H', data, 52, 64)
     return bytes(data)
-ARGS = ['idc', '--profile', 'resources', '--request-id', '550e8400-e29b-41d4-a716-446655440000', '-o', '-']
+UUID = '550e8400-e29b-41d4-a716-446655440000'
+# The root service now only brokers AgentSight collection control.
+ARGS = ['idc', '--agent-collection', 'status']
+# Resource collection and process actions run as the current user through the
+# system sysak; the root service must reject both argv families.
+NATIVE_ARGS = ['idc_inspect', '--request-id', UUID, '-o', '-']
+ACTION_ARGS = ['idc_inspect', '--process-action', 'check']
 def request(**changes):
     body = dict(schema_version='1.0', args=ARGS, stdin='', deadline=(NOW+35)*1000, manifest_sha256='a'*64)
     body.update(changes)
@@ -55,69 +61,105 @@ def root(uid=(0,0,0), gid=(0,0,0)):
 
 class Protocol(unittest.TestCase):
     def parse(self, body):
-        with clocks(): return m.validate_request(encoded(body), PID)
+        with clocks(): return m.validate_request(encoded(body))
     def reject(self, body):
         with self.assertRaises(m.Rejected): self.parse(body)
     def test_allowlist_and_deadlines(self):
-        for profile in ('resources', 'inspection'):
-            with self.subTest(profile=profile):
-                body, end, limit, stdin = self.parse(request(args=ARGS[:2]+[profile]+ARGS[3:]))
-                self.assertEqual((end, limit, stdin), (MONO+35, 30, b''))
-        for action in ('check', 'terminate'):
-            with self.subTest(action=action):
-                payload = json.dumps({'manager_pid':PID, 'targets':[{'pid':123,'starttime':'42'}]})
-                _, end, limit, stdin = self.parse(request(args=['idc','--process-action',action], stdin=payload, deadline=(NOW+15)*1000))
-                self.assertEqual((end, limit, stdin), (MONO+15, 10, payload.encode()))
+        for action in ('status', 'ensure', 'disable'):
+            for seconds in (35, 15, 1):
+                with self.subTest(action=action, seconds=seconds):
+                    body, end, limit, stdin = self.parse(request(args=['idc','--agent-collection',action], deadline=(NOW+seconds)*1000))
+                    self.assertEqual((body['args'], end, limit, stdin), (['idc','--agent-collection',action], MONO+seconds, 30, b''))
         for value in [True, False, None, '1000', 1.5, (NOW+35)*1000+1, NOW*1000, (NOW-1)*1000, 10**400]:
             with self.subTest(deadline=value): self.reject(request(deadline=value))
-        self.reject(request(args=['idc','--process-action','check'], stdin=json.dumps({'manager_pid':PID,'targets':[]}), deadline=(NOW+15)*1000+1))
+        for action in ('status', 'ensure', 'disable'):
+            with self.subTest(action=action, over_budget=True):
+                self.reject(request(args=['idc','--agent-collection',action], deadline=(NOW+35)*1000+1))
+            # One unified 35 s ceiling: the retired 15 s process-action budget is gone.
+            with self.subTest(action=action, unified_budget=True):
+                _, end, limit, stdin = self.parse(request(args=['idc','--agent-collection',action], deadline=(NOW+15)*1000+1))
+                self.assertEqual((limit, stdin), (30, b''))
+                self.assertAlmostEqual(end, MONO+15.001, places=3)
+    def test_retired_collection_and_process_action_argv_are_rejected(self):
+        # The old root collection profiles and process-action envelopes are gone:
+        # every one of them must now fail closed, with or without a payload.
+        for profile in ('resources', 'inspection', 'configuration', 'all', 'ai', 'gpudiag'):
+            with self.subTest(profile=profile):
+                self.reject(request(args=['idc','--profile',profile,'--request-id',UUID,'-o','-']))
+        for args in (NATIVE_ARGS, ['idc_inspect'], ['idc','--profile','resources','--request-id',UUID,'-o','-']):
+            with self.subTest(args=args): self.reject(request(args=args))
+        for command in ('idc', 'idc_inspect'):
+            for action in ('check', 'terminate'):
+                payload = json.dumps({'manager_pid':PID, 'targets':[{'pid':123,'starttime':'42'}]})
+                for stdin in ('', payload):
+                    with self.subTest(command=command, action=action, payload=bool(stdin)):
+                        self.reject(request(args=[command,'--process-action',action], stdin=stdin, deadline=(NOW+15)*1000))
     def test_fixed_collection_commands_cannot_enroll_or_accept_payload(self):
         for action in ('status', 'ensure', 'disable'):
             _, end, limit, stdin = self.parse(request(args=['idc','--agent-collection',action],deadline=(NOW+35)*1000))
             self.assertEqual((end, limit, stdin), (MONO+35,30,b''))
             self.reject(request(args=['idc','--agent-collection',action],deadline=(NOW+35)*1000+1))
-            self.reject(request(args=['idc','--agent-collection',action],stdin='{}',deadline=(NOW+15)*1000))
-        for action in ('enable','verify','setup','start','stop','sysom-idc.service',';id'):
+            for payload in ('{}', 'inert', '\n', ' ', '{"manager_pid":%d,"targets":[]}'%PID):
+                with self.subTest(action=action, payload=payload):
+                    self.reject(request(args=['idc','--agent-collection',action],stdin=payload,deadline=(NOW+15)*1000))
+        for action in ('enable','verify','setup','start','stop','sysom-idc.service',';id','STATUS',''):
             self.reject(request(args=['idc','--agent-collection',action],deadline=(NOW+15)*1000))
         self.reject(request(args=['idc','--agent-collection','ensure','--uid','0'],deadline=(NOW+15)*1000))
+        self.reject(request(args=['idc','--agent-collection'],deadline=(NOW+15)*1000))
+        self.reject(request(args=['idc','--agent-collection','status','status'],deadline=(NOW+15)*1000))
+        self.reject(request(args=['--agent-collection','idc','status'],deadline=(NOW+15)*1000))
+        self.reject(request(args=['idc_inspect','--agent-collection','status'],deadline=(NOW+15)*1000))
     def test_strict_keys_json_and_types(self):
         for key in request():
             body = request(); del body[key]
             with self.subTest(missing=key): self.reject(body)
         for key in ('uid','starttime','path','env','command','PKEXEC_UID'):
             with self.subTest(extra=key): self.reject(request(**{key:'inert'}))
-        for change in [dict(schema_version='2.0'),dict(schema_version=1),dict(args=None),dict(args='idc'),dict(args=[1]),
-                       dict(stdin=None),dict(stdin={}),dict(stdin='not empty'),dict(stdin='\0'),dict(manifest_sha256='A'*64),
-                       dict(manifest_sha256='a'*63),dict(manifest_sha256=123),dict(manifest_sha256='a'*64+'\n')]:
+        for change in [dict(schema_version='2.0'),dict(schema_version=1),dict(schema_version='1.1'),dict(args=None),dict(args='idc'),dict(args=[1]),
+                       dict(args=[]),dict(args=[['idc']]),dict(stdin=None),dict(stdin={}),dict(stdin=0),dict(stdin='not empty'),dict(stdin='\0'),
+                       dict(manifest_sha256='A'*64),dict(manifest_sha256='a'*63),dict(manifest_sha256=123),dict(manifest_sha256='a'*64+'\n')]:
             with self.subTest(change=change): self.reject(request(**change))
         raw = encoded(request())
         for data in [b'\xff', b'[]', b'null', b'{', raw[:-1]+b',"deadline":1}',
                      raw.replace(str((NOW+35)*1000).encode(), b'NaN'), raw.replace(str((NOW+35)*1000).encode(), b'Infinity'),
                      raw.replace(str((NOW+35)*1000).encode(), b'1e999'), b'['*1100+b']'*1100,
                      encoded(request(stdin='\ud800')), b'x'*(m.REQUEST_LIMIT+1)]:
-            with self.subTest(raw=data[:40]), clocks(), self.assertRaises(m.Rejected): m.validate_request(data, PID)
+            with self.subTest(raw=data[:40]), clocks(), self.assertRaises(m.Rejected): m.validate_request(data)
     def test_no_top_level_native_subcommands_shell_or_paths(self):
+        collection = ['idc','--profile','resources','--request-id',UUID,'-o','-']
         invalid = [[], ['x']*65, ['x']*64, ['x'*16384], ['x'*16385], ['汉'*5462], ['idc','x\0y'],
+                   ['idc_inspect','x\0y'], ['idc','--agent-collection','status\0'], ['idc','--agent-collection','stat us'],
+                   ARGS+['x']*62, ARGS+['x'*16384], ARGS[:2]+['汉'*5462],
                    ['resource_anomaly','--idc'], ['memgraph','--graph','--jsonstdout'], ['ai','--threshold','1s'], ['ai','--idc'], ['gpudiag','--idc'],
-                   ARGS[:2]+['ai']+ARGS[3:], ARGS[:2]+['gpudiag']+ARGS[3:],
+                   NATIVE_ARGS, ['idc_inspect','--idc'], collection[:2]+['ai']+collection[3:], collection[:2]+['gpudiag']+collection[3:],
                    ['resource_anomaly','--process-action','check'], ['memgraph','--idc','--jsonstdout'],
                    ['memgraph','--graph','--jsonstdout','--output','/etc/fixture'], ['sh','-c','true'],
                    ['idc','--process-action','kill'], ['idc','--process-action','check','--caller-uid','0'],
-                   ARGS[:-1]+['/etc/fixture'], ARGS[:2]+['configuration']+ARGS[3:]]
-        for value in ('$(id)',chr(96)+'id'+chr(96),'uuid";id;"','invalid-uuid'): invalid.append(ARGS[:4]+[value]+ARGS[5:])
+                   ACTION_ARGS, collection[:-1]+['/etc/fixture'], collection[:2]+['configuration']+collection[3:],
+                   ARGS+['/etc/fixture'], ARGS+['--output','/etc/fixture'], ['/usr/bin/python3','-I','/inert.py','status']]
+        for value in ('$(id)',chr(96)+'id'+chr(96),'uuid";id;"','invalid-uuid','/etc/fixture','../fixture','status;id'):
+            invalid.append(collection[:4]+[value]+collection[5:])
+            invalid.append(['idc','--agent-collection',value])
         for args in invalid:
             with self.subTest(args=str(args)[:100]): self.reject(request(args=args))
     def test_action_envelope_manager_must_be_peer(self):
+        # Process-action envelopes no longer reach the root service at all: any
+        # non-empty stdin is refused, whatever identity or shape it claims.
         for body in [{}, {'manager_pid':PID}, {'manager_pid':PID,'targets':{}}, {'manager_pid':PID+1,'targets':[]},
                      {'manager_pid':True,'targets':[]}, {'manager_pid':str(PID),'targets':[]}]:
-            with self.subTest(body=body): self.reject(request(args=['idc','--process-action','check'],stdin=json.dumps(body),deadline=(NOW+15)*1000))
+            with self.subTest(body=body): self.reject(request(stdin=json.dumps(body),deadline=(NOW+15)*1000))
         for key in ('uid','caller_uid','starttime','path','env','command'):
             body = {'manager_pid':PID,'targets':[],key:'inert'}
-            with self.subTest(key=key): self.reject(request(args=['idc','--process-action','terminate'],stdin=json.dumps(body),deadline=(NOW+15)*1000))
+            with self.subTest(key=key): self.reject(request(stdin=json.dumps(body),deadline=(NOW+15)*1000))
+        raw = encoded(request())
         for payload in ['{"manager_pid":%d,"manager_pid":%d,"targets":[]}'%(PID,PID),
                         '{"manager_pid":%d,"targets":[NaN]}'%PID,
                         '{"manager_pid":%d,"targets":[{"pid":1,"pid":2}]}'%PID]:
-            with self.subTest(payload=payload): self.reject(request(args=['idc','--process-action','check'],stdin=payload,deadline=(NOW+15)*1000))
+            with self.subTest(payload=payload):
+                self.reject(request(stdin=payload,deadline=(NOW+15)*1000))
+                # The same malformed JSON in the request body must still be caught
+                # by strict_json (duplicate keys / non-finite constants), not by the allowlist.
+                with clocks(), self.assertRaises(m.Rejected): m.validate_request(raw[:-1]+b',"envelope":'+payload.encode()+b'}')
     def test_verification_cost_and_one_second_reserve(self):
         for elapsed in (14,15,16):
             with self.subTest(elapsed=elapsed), clocks(NOW+elapsed, MONO+elapsed), self.assertRaises(m.Expired):
@@ -382,7 +424,9 @@ class ExecutionFixture:
         self.conn.recv.side_effect=lambda *a:b'' if self.disconnected else b'extra-request'
         self.disconnected=False; self.peer_dead=False; self.events=[]; self.frames=[]; self.input=bytearray()
         self.stop=threading.Event(); self.action=action
-        self.body=request(args=['idc','--process-action','check'],stdin=json.dumps({'manager_pid':PID,'targets':[]}),deadline=(NOW+15)*1000) if action else request()
+        # run_collector is exercised in isolation here: validate_request rejects both
+        # of these argv families (see Protocol), so the service can never reach them.
+        self.body=request(args=ACTION_ARGS,stdin=json.dumps({'manager_pid':PID,'targets':[]}),deadline=(NOW+15)*1000) if action else request(args=NATIVE_ARGS)
     def read(self,fd,n):
         assert n==m.CHUNK, 'pipe reads must be bounded to 16 KiB'
         data=self.output[fd][:n]; self.output[fd]=self.output[fd][n:]; return data
@@ -527,7 +571,7 @@ class AgentCollectionExecution(unittest.TestCase):
             for code,expected in ((0,0),(42,42),(124,124),(-15,143)):
                 fixture=self.collector(action,code)
                 with self.subTest(action=action,code=code), self.patched(fixture) as (install,resolve,trusted):
-                    body,end,limit,payload=m.validate_request(encoded(fixture.body),PID)
+                    body,end,limit,payload=m.validate_request(encoded(fixture.body))
                     self.assertEqual(payload,b'')
                     self.assertEqual(m.run_collector(fixture.conn,(1000,PID,777,PEERFD),body,end,limit,payload,fixture.stop),expected)
                     resolve.assert_called_once_with(self.INTERPRETER,strict=True)
@@ -580,7 +624,7 @@ class AgentCollectionExecution(unittest.TestCase):
         with fixture.patched(), mock.patch.object(m.Path,'resolve') as resolve, mock.patch.object(m,'trusted') as trusted:
             self.assertEqual(fixture.run(),0)
             resolve.assert_not_called(); trusted.assert_not_called()
-            self.assertEqual(m.subprocess.Popen.call_args.args[0][4:],[str(m.ROOT/'sysak'),*ARGS])
+            self.assertEqual(m.subprocess.Popen.call_args.args[0][4:],[str(m.ROOT/'sysak'),*NATIVE_ARGS])
         fixture.assert_cleanup(self)
     def test_service_propagates_fixed_manager_exit_status(self):
         for action in ('status','ensure','disable'):
@@ -598,6 +642,9 @@ class AgentCollectionExecution(unittest.TestCase):
                 fixture.assert_cleanup(self)
     def test_service_rejects_arbitrary_commands_extra_args_and_payload_before_dispatch(self):
         invalid=[([],''),(['sh','-c','inert'],''),([str(m.AGENT_COLLECTION),'status'],''),
+                 (NATIVE_ARGS,''),(ACTION_ARGS,''),
+                 (ACTION_ARGS,json.dumps({'manager_pid':PID,'targets':[]})),
+                 (['idc','--profile','resources','--request-id',UUID,'-o','-'],''),
                  (['idc','--agent-collection'],''),(['idc','--agent-collection','status','--uid','1000'],''),
                  (['idc','--agent-collection','ensure','--accept-host-capture'],''),
                  (['idc','--agent-collection','disable','/bin/sh'],''),

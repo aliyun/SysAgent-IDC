@@ -62,7 +62,7 @@ const interruptionProperties = { id: string, sessionId: nullable(string), callId
 const latencyProperties = { agent: nullable(string), calls: integer, streamingCalls: integer, ttftP95Ms: nullable(number), e2eP95Ms: nullable(number), tpsP50: nullable(number), tpotP95Ms: nullable(number) };
 const agentFindingProperties = { severity: enumeration('info', 'warning', 'error'), title: string, detail: string, suggestion: string };
 const coverageProperties = { key: enumeration('processes', 'sessions', 'interruptions', 'interruptionCounts', 'latency'), status: enumeration('available', 'unavailable', 'invalid', 'truncated'), reason: string };
-const taskProperties = { id: string, request_id: string, operation: string, status: string, profile: string, collection_status: string, raw_bytes: integer, collected_at: date, simulated: boolean };
+const taskProperties = { id: string, request_id: string, operation: string, status: string, profile: string, collection_status: string, raw_bytes: integer, collected_at: date, simulated: boolean, uploaded: boolean, inspection_id: string };
 
 const CACHE_LIMITS = [
   'Read-only controller cache; never refreshes, collects, executes actions, or queries the host.',
@@ -121,7 +121,7 @@ const definitions = [
   definition('agent-coverage', 'agent', 'coverage', { id: string, ...coverageProperties },
     'id key status reason', [...AGENT_LIMITS, GENERATED_LIMIT], { generated: true }),
   definition('tasks', 'tasks', 'tasks', taskProperties,
-    'id request_id operation status profile collection_status raw_bytes collected_at simulated',
+    'id request_id operation status profile collection_status raw_bytes collected_at simulated uploaded inspection_id',
     ['At most 100 successful task metadata records from this controller process; not failures, global task history, raw data, secrets or system paths.']),
 ];
 const RESOURCE_IDS = ['cpu', 'energy', 'memory', 'disk', 'gpu'];
@@ -476,7 +476,7 @@ function openApiContract() {
   const catalogField = object({ name: string, type: enumeration('string', 'number', 'integer', 'boolean', 'object', 'array'), nullable: boolean, filter: boolean, range: boolean, sort: boolean, project: { const: true }, enum: array({ type: ['string', 'number'] }), format: string }, ['name', 'type', 'nullable', 'filter', 'range', 'sort', 'project']);
   const schemas = {
     Meta: meta, Task: taskSchema, HealthState: healthState, AgentDiagnostic: agentReport, HealthSummary: summary,
-    Status: object({ schema_version: { const: '1.0' }, mode: string, read_only: { const: true }, device_id: string, installed: boolean, enabled: boolean, phase: string, api_version: string, last_task: { oneOf: [taskSchema, { type: 'null' }] }, inspection_interval_minutes: { type: 'integer', minimum: 1, maximum: 1440 }, next_inspection_at: nullable(date), error: { oneOf: [object({ code: string, message: string }, ['code', 'message']), { type: 'null' }] } }, ['schema_version', 'mode', 'read_only', 'device_id', 'installed', 'enabled', 'phase', 'api_version', 'last_task', 'inspection_interval_minutes', 'next_inspection_at', 'error']),
+    Status: object({ schema_version: { const: '1.1' }, mode: enumeration('mock', 'pre'), read_only: { const: true }, device_id: string, installed: boolean, enabled: boolean, phase: string, api_version: string, last_task: { oneOf: [taskSchema, { type: 'null' }] }, inspection_interval_minutes: { type: 'integer', minimum: 1, maximum: 1440 }, next_inspection_at: nullable(date), error: { oneOf: [object({ code: string, message: string }, ['code', 'message']), { type: 'null' }] } }, ['schema_version', 'mode', 'read_only', 'device_id', 'installed', 'enabled', 'phase', 'api_version', 'last_task', 'inspection_interval_minutes', 'next_inspection_at', 'error']),
     Capabilities: object({ schema_version: { const: '1.0' }, read_only: { const: true }, cache_only: { const: true }, datasets: array(object({ name: enumeration(...definitions.map(def => def.name)), cached: boolean, detail_id_field: string, id_scope: string, fields: array(catalogField), meta: ref('Meta') }, ['name', 'cached', 'detail_id_field', 'id_scope', 'fields', 'meta'])) }, ['schema_version', 'read_only', 'cache_only', 'datasets']),
     Error: object({ schema_version: { const: '1.0' }, error: object({ code: string, message: string }, ['code', 'message']) }, ['schema_version', 'error']),
     HttpMeta: object({ instance_id: string, host_kind: string, device_id: string, revision: nullable(integer), sampled_at: nullable(date), agent_sampled_at: nullable(date), cache_only: { const: true } }, ['instance_id', 'host_kind', 'device_id', 'revision', 'sampled_at', 'agent_sampled_at', 'cache_only']),
@@ -491,6 +491,19 @@ function openApiContract() {
     collection: object({ state: enumeration('running', 'disabled', 'failed', 'unavailable'), enabled: boolean, scope: enumeration('host', 'none'), trace_running: boolean, api_running: boolean, message: string }, ['state', 'enabled', 'scope', 'trace_running', 'api_running', 'message']),
   }, ['state', 'managed', 'code', 'message']);
   schemas.Status.properties.query_api = object({ enabled: boolean, base_url: nullable(string), instance_id: nullable(string), error: { oneOf: [object({ code: string, message: string }), { type: 'null' }] } }, ['enabled', 'base_url', 'instance_id', 'error']);
+  schemas.Status.properties.collector = object({ name: string, command: string, schema_version: string,
+    binary: nullable(string), source: nullable(string), version: nullable(string) },
+    ['name', 'command', 'schema_version', 'binary', 'source', 'version']);
+  schemas.Status.properties.collection = nullable(object({ schema_version: string, command: string, version: nullable(string),
+    status: string, collected_at: date, duration_ms: nullable(number),
+    sections: array(object({ name: string, status: string, reason: string }, ['name', 'status', 'reason'])) },
+    ['schema_version', 'command', 'version', 'status', 'collected_at', 'duration_ms', 'sections']));
+  // 步骤5 云端巡检视图；report 是后端报告正文，字段随后端演进，这里只约束信封。
+  schemas.Status.properties.cloud_inspection = nullable(object({ inspectionId: string, status: string, phase: nullable(string),
+    progress: number, reportId: nullable(string), reportStatus: nullable(string),
+    report: nullable({ type: 'object', additionalProperties: true }),
+    error: nullable(object({ code: string, message: string }, ['code', 'message'])), updatedAt: date },
+    ['inspectionId', 'status', 'phase', 'progress', 'reportId', 'reportStatus', 'report', 'error', 'updatedAt']));
   schemas.CapabilitiesData = object({ ...schemas.Capabilities.properties, unavailable_features: array(string), demo_data_exposed: { const: false }, query_max_limit: { const: 1000 } }, [...schemas.Capabilities.required, 'unavailable_features', 'demo_data_exposed', 'query_max_limit']);
   for (const [name, data] of [['StatusResponse', 'Status'], ['CapabilitiesResponse', 'CapabilitiesData']]) {
     schemas[name] = object({ schema_version: { const: '1.0' }, meta: ref('HttpMeta'), data: ref(data) }, ['schema_version', 'meta', 'data']);

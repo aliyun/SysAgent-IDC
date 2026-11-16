@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, Blocks, Check, ChevronRight, Clock3, Cpu, FileText, FolderRoot, Gauge, HardDrive, Info, ListChecks, LoaderCircle, MemoryStick, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, Trash2, TriangleAlert, Zap, type LucideIcon } from 'lucide-react';
 import type { Device, PageId } from './data';
 import { MascotLogo, Modal } from './components';
@@ -6,10 +6,11 @@ import { AgentOverviewCards } from './AgentOverviewCards';
 import { ResourceRankings } from './ResourceRankings';
 import { HealthPerformance } from './HealthPerformance';
 import { CollectionStatus } from './CollectionStatus';
+import { CloudReportModal, cloudActive, cloudStatusLabels, itemNameLabels, levelLabels, levelRank } from './CloudReport';
 import { localTime } from '../agent-diagnostics';
 import { collectedRankingRows, inspectionResultLabel, buildHealthReport, formatResourceValue, formatResourceQuantity, inspectionScope, scoreBand, stateResourceIds, summarizeHealth, type HealthState, type Inspection, type ResourceId } from './health-data';
-import { cleanupAgentSessions, cleanupResources, executeProcessCleanup, prepareProcessCleanup, optimizeHealth, runHealthInspection } from './health-api';
-import type { ProcessCleanupPlan, ProcessCleanupResult } from './idc-client';
+import { cleanupAgentSessions, cleanupResources, executeProcessCleanup, prepareProcessCleanup, optimizeHealth, runHealthInspection, fetchCollectorStatus } from './health-api';
+import type { CloudInspectionReport, CollectorStatus, ProcessCleanupPlan, ProcessCleanupResult } from './idc-client';
 export type RefreshHealthSnapshot = (refresh?: boolean) => Promise<HealthState>;
 export interface HealthReportContentProps {
   device: Device;
@@ -60,14 +61,12 @@ const resourceIcons: Record<ResourceId, LucideIcon> = {
   resourceCircumference = 2 * Math.PI * 33;
 function ScoreRing({
   score,
-  label,
   color
 }: {
   score: number;
-  label?: string;
   color?: string;
 }) {
-  const band = { ...scoreBand(score), ...(label ? { label } : {}), ...(color ? { color } : {}) };
+  const band = { ...scoreBand(score), ...(color ? { color } : {}) };
   const circumference = 2 * Math.PI * 80;
   return <div
     className="sh-score-ring"
@@ -103,9 +102,6 @@ function ScoreRing({
           {"分"}
         </small>
       </strong>
-      <span>
-        {band.label}
-      </span>
     </div>
   </div>;
 }
@@ -117,7 +113,7 @@ export function HealthReportContent({
   const summary = summarizeHealth(state);
   return <div className="snapshot-home sh-report">
     <div className="sh-report-header">
-      <ScoreRing score={summary.score} label={summary.band.label} color={summary.band.color} />
+      <ScoreRing score={summary.score} color={summary.band.color} />
       <div>
         <h3>
           {device.name}
@@ -214,6 +210,16 @@ export function HealthReportContent({
     </div>
   </div>;
 }
+function cloudConclusion(report: CloudInspectionReport): string {
+  const summary = report.summary ?? {};
+  const items = report.itemSummaries ?? [];
+  const overall = summary.overallLevel ?? 'Normal';
+  const abnormal = items.filter(item => item.level !== 'Normal').sort((a, b) => (levelRank[a.level] ?? 9) - (levelRank[b.level] ?? 9));
+  const head = `云端巡检结论：${levelLabels[overall] ?? overall}。巡检项 ${summary.totalItems ?? items.length}，异常 ${summary.abnormalItems ?? abnormal.length}；实例 ${summary.totalInstances ?? 0}，异常 ${summary.abnormalInstances ?? 0}。`;
+  if (!abnormal.length) return `${head}各项未见异常。`;
+  const lead = abnormal.slice(0, 2).map(item => `${itemNameLabels[item.itemName] ?? item.itemName}（${levelLabels[item.level] ?? item.level}）：${item.reason || '异常'}`).join('；');
+  return `${head}异常项：${lead}${abnormal.length > 2 ? ` 等 ${abnormal.length} 项` : ''}。`;
+}
 export function HealthGuardPage({
   device,
   state,
@@ -244,7 +250,24 @@ export function HealthGuardPage({
   const [operationSuccess, setOperationSuccess] = useState("");
   const [cleanupPlan, setCleanupPlan] = useState<ProcessCleanupPlan | null>(null);
   const [processResults, setProcessResults] = useState<ProcessCleanupResult['results']>([]);
+  const [collectorStatus, setCollectorStatus] = useState<CollectorStatus | null>(null);
+  const [cloudReportOpen, setCloudReportOpen] = useState(false);
   const operationInFlight = useRef(false);
+  useEffect(() => {
+    let mounted = true;
+    const poll = async () => {
+      try {
+        const next = await fetchCollectorStatus();
+        if (mounted) setCollectorStatus(next);
+      } catch { /* 状态轮询失败不阻塞首页本地数据 */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 5000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
+  const cloud = collectorStatus?.cloud_inspection ?? null;
+  const cloudReport = cloud?.report ?? null;
+  const cloudSuffix = cloud && cloudActive.has(cloud.status) ? ` 采集已上传，云端${cloudStatusLabels[cloud.status] ?? cloud.status}${cloud.progress > 0 ? ` ${cloud.progress}%` : ''}。` : cloud?.error ? ` 云端巡检未完成：${cloud.error.message}。` : '';
   const collected = state.mode === 'collected';
   const summary = summarizeHealth(state);
   const busy = operationPhase !== "idle" || loading || externalBusy;
@@ -370,10 +393,11 @@ export function HealthGuardPage({
       }
       mutationCompleted = true;
       setOperationPhase("refresh");
-      const snapshot = await onRefresh(false);
+      await onRefresh(false);
       setSelectedRowIds([]);
       setSelectedOptimizationIds([]);
-      const message = `${kind === "session-cleanup" ? "Session 清理" : kind === "cleanup" ? "清理" : kind === "optimize" ? "优化" : "体检"}完成，资源快照与诊断展示已刷新至 v${snapshot.revision}；缺失或未检查项没有正常结论。`;
+      const prefix = kind === "session-cleanup" ? "Session 清理" : kind === "cleanup" ? "清理" : kind === "optimize" ? "优化" : "";
+      const message = prefix ? `${prefix}完成，资源快照与诊断结论已刷新` : "资源快照与诊断结论已刷新";
       setOperationSuccess(message);
       onNotify(message);
     } catch (error) {
@@ -554,7 +578,7 @@ export function HealthGuardPage({
     </div>
     <section className="sh-hero">
       <div className="sh-hero-score">
-        <ScoreRing score={summary.score} label={summary.band.label} color={summary.band.color} />
+        <ScoreRing score={summary.score} color={summary.band.color} />
         {!collected && <button
           className="sh-optimize-button"
           disabled={blocked || !state.optimizations.length}
@@ -575,7 +599,7 @@ export function HealthGuardPage({
           {collected ? summary.open.length ? '当前采集与诊断展示中有指标需要关注。' : '当前资源快照已更新，未检查项没有健康结论。' : summary.x ? `${summary.x} 项重要诊断异常，建议优先优化。` : summary.y ? "重要诊断已正常，仍有资源与服务需要关注。" : "已检查项运行良好，继续守护本机健康。"}
         </h1>
         <p>
-          {collected ? `IDC / sysAK 经本地 OpenAPI 解析系统资源，只读展示。诊断有确定结论 ${summary.checked} 项、未检查或结论受限 ${summary.unchecked} 项；资源不可用 ${summary.unavailable} 项。其他模块仍可能为 Demo，不代表全部诊断已接入。` : <>{"已完成 "}
+          {cloudReport ? cloudConclusion(cloudReport) : collected ? `诊断有确定结论 ${summary.checked} 项、未检查或结论受限 ${summary.unchecked} 项；资源不可用 ${summary.unavailable} 项。${cloudSuffix}` : <>{"已完成 "}
           {summary.checked}
           {" 项一期检查，根目录、内存和 FD 中"}
           {" "}
@@ -623,7 +647,7 @@ export function HealthGuardPage({
           </button>
           <button
             className="hg-text-button"
-            onClick={() => setReportOpen(true)}
+            onClick={() => (cloudReport ? setCloudReportOpen(true) : setReportOpen(true))}
           >
             <Clock3 size={13} />
             {"体检报告"}
@@ -1263,6 +1287,7 @@ export function HealthGuardPage({
         </div>
       </div>
     </Modal>}
+    {cloudReportOpen && cloudReport && <CloudReportModal report={cloudReport} onClose={() => setCloudReportOpen(false)} />}
     {reportOpen && <Modal
       title="本机体检报告"
       subtitle={`${collected ? '本地采集 · 诊断来源单独标注' : 'Demo'} 最新整体快照 v${state.revision}`}

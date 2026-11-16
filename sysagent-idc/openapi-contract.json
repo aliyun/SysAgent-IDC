@@ -3,7 +3,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "SysAgent Guard evidence OpenAPI (mock)",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Local sysak collection -> authenticated loopback HTTP -> parsed real resource and diagnostic HealthState. Independent AgentSight evidence -> POST /openapi/v1/agent-diagnostics -> shared AgentDiagnostic using deterministic local rules, without sysak device snapshots or revisions. AgentSight is not sysak evidence and never changes its snapshot state. mode: mock identifies local deployment, not simulated measurements; state.mode is collected and task.simulated is false. Read-only snapshot, reset, inspect and independent agent-diagnose are supported; cleanup, optimization and simulated mutations return 409 read_only. Missing measurements are null with availability metadata, never demo values. Successful Agent parsing does not assert health or confirm a fault root cause. All routes require Bearer authentication, bind only to 127.0.0.1, reject Origin headers, and emit JSON with Cache-Control: no-store. No raw snapshots or tokens are logged or persisted. Tasks complete synchronously (HTTP 200), sharing a maximum 100 retained results/tasks across evidence routes. The server never invokes collectors, LLMs, external services, shell commands, resolve, restart or process actions."
   },
   "servers": [{ "url": "http://127.0.0.1:{port}", "variables": { "port": { "default": "8787", "description": "Actual ephemeral or configured loopback port returned by startMockOpenApi; 8787 is illustrative only." } } }],
@@ -13,7 +13,7 @@
       "post": {
         "operationId": "submitCollection",
         "summary": "Parse a local sysak snapshot and return real resource state",
-        "description": "Uncompressed UTF-8 JSON: request maximum 10 MiB, original raw_snapshot value including internal whitespace maximum 8 MiB. Raw request_id exactly matches outer request_id. Outer persistent device UUID supplies receipt.device.id; collection.finished_at supplies collected_at and sampledAt. Raw evidence is not rewritten. inspect maps to inspection; snapshot/reset map to resources. Collector error returns 503 without commit; partial is accepted with explicit unavailable measurements. Parse CPU counter deltas, MemTotal-MemAvailable, root statvfs, GPU resource reports (tool idc, mode idc, read_only true) from IDC on-demand fixed nvidia-smi CSV queries, package-only RAPL watts and bounded process CPU/RSS/I/O rankings. Agent/Session attribution is not implemented. Inspection parses fixed resource_anomaly --idc root/FD and memgraph --idc --jsonstdout evidence; other diagnoses remain unchecked. Successful fresh requests increment revision (initial snapshot/reset: 1); replay preserves its original revision and does not replace latest snapshot. Resources refresh preserves independent inspection results; reset clears inspection history without reducing revision. hasGpu is inferred from evidence, not the optional UI hint. snapshot/reset revision optional; inspect and legacy write requests require positive matching revision checked before raw interpretation. Legacy write operations return 409 read_only, never commit. Capacity 32 devices, retryable 503 on overflow; last 100 successful requests/tasks retained FIFO. Case-insensitive UUID replay lookup requires exactly identical body bytes, otherwise 409; replay does not refresh FIFO or latest snapshot. Evicted tasks return 404. Raw data is neither returned nor retained.",
+        "description": "Uncompressed UTF-8 JSON: request maximum 10 MiB, original raw_snapshot value including internal whitespace maximum 8 MiB. Raw request_id exactly matches outer request_id. Outer persistent device UUID supplies receipt.device.id; collection.finished_at supplies collected_at and sampledAt. Raw evidence is not rewritten. inspect, snapshot and reset all accept the single idc_inspect inspection profile. A failed collection returns 503 without commit; partial is accepted with explicit unavailable measurements. Parse cpu.total.usage_pct, memory total_kb-available_kb, the root entry of disk.mounts, fd allocated/max plus per-process fd_count/fd_limit, gpu nvidia-smi device facts, energy package-only RAPL watts, and process.top_cpu/top_rss plus io.by_disk/by_vfs rankings keyed by pid+starttime. Agent/Session attribution is not implemented. Inspection derives root/memory/FD/log/GPU items from those same 1.1 sections; network, io and agents diagnoses remain unchecked, and GPU job-level ai analysis stays not_run because current idc_inspect emits no diagnostics.ai. Successful fresh requests increment revision (initial snapshot/reset: 1); replay preserves its original revision and does not replace latest snapshot. Resources refresh preserves independent inspection results; reset clears inspection history without reducing revision. hasGpu is inferred from evidence, not the optional UI hint. snapshot/reset revision optional; inspect and legacy write requests require positive matching revision checked before raw interpretation. Legacy write operations return 409 read_only, never commit. Capacity 32 devices, retryable 503 on overflow; last 100 successful requests/tasks retained FIFO. Case-insensitive UUID replay lookup requires exactly identical body bytes, otherwise 409; replay does not refresh FIFO or latest snapshot. Evicted tasks return 404. Raw data is neither returned nor retained.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionRequest" } } } },
         "responses": {
           "200": { "description": "Completed read-only parsing task", "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionResponse" } } } },
@@ -108,10 +108,13 @@
     },
     "schemas": {
       "UUID": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$" },
-      "Version": { "type": "string", "const": "1.0" },
+      "Version": { "type": "string", "const": "1.1", "description": "sysAK idc_inspect collection envelope and collection-route responses." },
+      "AgentVersion": { "type": "string", "const": "1.0", "description": "Independent AgentSight evidence contract; unchanged by the sysAK collection upgrade." },
+      "AnyVersion": { "type": "string", "enum": ["1.0", "1.1"], "description": "Error envelopes echo the schema of the route that failed." },
+      "EvidenceId": { "type": "string", "pattern": "^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$", "description": "App-generated UUID, or the 32-hex server inspection_id that sysAK writes into request_id after a successful pre-environment upload." },
       "ShortString": { "type": "string", "minLength": 1, "maxLength": 128 },
       "Operation": { "type": "string", "enum": ["snapshot", "reset", "inspect", "cleanup", "optimize", "sessions-cleanup", "alert-sample"] },
-      "Profile": { "type": "string", "enum": ["resources", "inspection"] },
+      "Profile": { "type": "string", "const": "inspection", "description": "idc_inspect default mode always emits the inspection profile; there is no separate resources profile." },
       "ResourceId": { "type": "string", "enum": ["cpu", "energy", "memory", "disk", "gpu"] },
       "Ids": { "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": { "$ref": "#/components/schemas/ShortString" } },
       "Parameters": {
@@ -129,7 +132,7 @@
         "required": ["schema_version", "request_id", "device_id", "operation", "raw_snapshot", "parameters"],
         "x-max-request-bytes": 10485760,
         "properties": {
-          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "device_id": { "$ref": "#/components/schemas/UUID", "description": "App-persistent random UUID, independent of raw device metadata; supplies receipt.device.id." },
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/EvidenceId" }, "device_id": { "$ref": "#/components/schemas/UUID", "description": "App-persistent random UUID, independent of raw device metadata; supplies receipt.device.id." },
           "operation": { "$ref": "#/components/schemas/Operation" }, "raw_snapshot": { "$ref": "#/components/schemas/RawSnapshot" }, "parameters": { "$ref": "#/components/schemas/Parameters" }
         },
         "allOf": [
@@ -138,9 +141,7 @@
           { "if": { "properties": { "operation": { "const": "cleanup" } } }, "then": { "properties": { "parameters": { "required": ["resource", "ids"], "propertyNames": { "enum": ["revision", "hasGpu", "resource", "ids"] } } } } },
           { "if": { "properties": { "operation": { "const": "optimize" } } }, "then": { "properties": { "parameters": { "required": ["ids"], "propertyNames": { "enum": ["revision", "hasGpu", "ids"] } } } } },
           { "if": { "properties": { "operation": { "const": "sessions-cleanup" } } }, "then": { "properties": { "parameters": { "required": ["resource", "agentId", "sessionIds"], "propertyNames": { "enum": ["revision", "hasGpu", "resource", "agentId", "sessionIds"] } } } } },
-          { "if": { "properties": { "operation": { "const": "alert-sample" } } }, "then": { "properties": { "parameters": { "required": ["target", "usage"], "propertyNames": { "enum": ["revision", "hasGpu", "target", "usage"] } } } } },
-          { "if": { "properties": { "operation": { "const": "inspect" } } }, "then": { "properties": { "raw_snapshot": { "properties": { "collection": { "properties": { "profile": { "const": "inspection" } } } } } } } },
-          { "if": { "properties": { "operation": { "enum": ["snapshot", "reset", "cleanup", "optimize", "sessions-cleanup", "alert-sample"] } } }, "then": { "properties": { "raw_snapshot": { "properties": { "collection": { "properties": { "profile": { "const": "resources" } } } } } } } }
+          { "if": { "properties": { "operation": { "const": "alert-sample" } } }, "then": { "properties": { "parameters": { "required": ["target", "usage"], "propertyNames": { "enum": ["revision", "hasGpu", "target", "usage"] } } } } }
         ]
       },
       "Permissions": {
@@ -149,27 +150,33 @@
         "properties": { "status": { "type": "string", "enum": ["granted", "partial", "denied"] }, "elevated": { "type": "boolean" }, "denied": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/components/schemas/ShortString" } } }
       },
       "Collector": {
-        "type": "object", "required": ["name"], "additionalProperties": true,
-        "properties": { "name": { "type": "string", "const": "sysak" }, "version": { "$ref": "#/components/schemas/ShortString" }, "permissions": { "$ref": "#/components/schemas/Permissions" } },
-        "description": "Metadata from the local allowlisted sysak collector. Extra collector metadata is accepted but not echoed. This mock does not authenticate hardware provenance and never invokes a collector or shell."
+        "type": "object", "required": ["name", "command"], "additionalProperties": true,
+        "properties": { "name": { "type": "string", "const": "sysak" }, "command": { "type": "string", "const": "idc_inspect" }, "version": { "$ref": "#/components/schemas/ShortString" }, "permissions": { "$ref": "#/components/schemas/Permissions" } },
+        "description": "Metadata from the local allowlisted sysak idc_inspect collector, invoked as the current user. Extra collector metadata is accepted but not echoed. This mock does not authenticate hardware provenance and never invokes a collector or shell."
       },
       "Device": { "type": "object", "additionalProperties": true, "description": "Opaque local sysAK metadata: platform, machine, hostname and scope: local. No id is emitted or required; receipt.device.id comes from outer device_id. Device metadata is not echoed." },
       "RawSnapshot": {
         "type": "object", "additionalProperties": true, "x-max-json-bytes": 8388608,
-        "required": ["schema_version", "request_id", "collection", "collector", "device", "resources", "configuration", "diagnostics", "capabilities"],
-        "description": "Structured sysAK idc.py envelope, preserved unchanged. collection.finished_at is the completion timestamp. All three sections are objects even when unavailable. Known resource and safe diagnostic evidence is parsed; unknown fields are not echoed. No arbitrary command API. Limits apply to original UTF-8 JSON bytes. Invalid or missing individual measurements become unavailable, not successful zero samples.",
+        "required": ["schema_version", "request_id", "collection", "collector", "host", "device", "sections", "capabilities"],
+        "description": "Structured sysAK idc_inspect schema 1.1 envelope, preserved unchanged. host is top-level; every other section lives under sections with its data inline beside status/reason/detail (no 1.0 content wrapper). collection.finished_at is the completion timestamp. cpu, memory, disk and fd sections must be objects even when unavailable. Known facts are parsed; unknown fields are not echoed. No arbitrary command API. Limits apply to original UTF-8 JSON bytes. Invalid or missing individual measurements become unavailable, not successful zero samples.",
         "properties": {
-          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" },
+          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/EvidenceId", "description": "Must exactly match the outer request_id, including when sysAK overwrote it with the server inspection_id." },
           "collection": {
             "type": "object", "required": ["profile", "status", "finished_at"], "additionalProperties": true,
-            "description": "Collector also emits started_at, duration_ms and, for resources/inspection, sample_ms; these remain opaque metadata.",
+            "description": "Collector also emits started_at, duration_ms, sample_window_ms, budget_ms, truncated, coverage and a per-section status/reason/detail mirror; these remain opaque metadata.",
             "properties": {
-              "profile": { "$ref": "#/components/schemas/Profile" }, "status": { "type": "string", "enum": ["ok", "partial", "error"] },
+              "profile": { "$ref": "#/components/schemas/Profile" }, "status": { "type": "string", "enum": ["ok", "partial", "failed"], "description": "failed means host or all core sections are unavailable; the server returns 503 without committing state." },
               "finished_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$", "description": "Valid calendar date/time, timezone required, seconds 00-59 (no leap-second encoding). Supplies receipt.collected_at." }
             }
           },
           "collector": { "$ref": "#/components/schemas/Collector" }, "device": { "$ref": "#/components/schemas/Device" },
-          "resources": { "type": "object", "additionalProperties": true }, "configuration": { "type": "object", "additionalProperties": true }, "diagnostics": { "type": "object", "additionalProperties": true },
+          "host": { "type": "object", "additionalProperties": true, "description": "Top-level host facts (kernel, distribution, uptime, boot id); not a member of sections." },
+          "sections": {
+            "type": "object", "additionalProperties": true, "required": ["cpu", "memory", "disk", "fd"],
+            "description": "Per-section envelopes. Each carries status/reason/detail/sample_window_ms/truncated/parse_errors plus its data fields inline. Optional sections (psi, network, process, io, energy, gpu, log, service, config and the heavy deep-mode sections) may be absent or unavailable.",
+            "properties": { "cpu": { "type": "object", "additionalProperties": true }, "memory": { "type": "object", "additionalProperties": true }, "disk": { "type": "object", "additionalProperties": true }, "fd": { "type": "object", "additionalProperties": true } }
+          },
+          "diagnostics": { "type": "object", "additionalProperties": true, "description": "Optional forward-compatible diagnostic evidence (for example a future sysak ai report). Absent in current idc_inspect output; GPU job-level analysis therefore stays not_run." },
           "capabilities": { "type": "object", "required": ["read_only"], "additionalProperties": true, "properties": { "read_only": { "type": "boolean", "const": true } }, "description": "Collector read-only declaration; supported_profiles and unsupported_actions remain opaque metadata, not server permissions." }
         }
       },
@@ -178,7 +185,7 @@
         "properties": {
           "raw_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 }, "profile": { "$ref": "#/components/schemas/Profile" },
           "collected_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$", "description": "Copied from raw_snapshot.collection.finished_at." }, "collection_status": { "type": "string", "enum": ["ok", "partial"] },
-          "collector": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "const": "sysak", "type": "string" }, "version": { "$ref": "#/components/schemas/ShortString" }, "permissions": { "$ref": "#/components/schemas/Permissions" } } },
+          "collector": { "type": "object", "additionalProperties": false, "required": ["name", "command"], "properties": { "name": { "const": "sysak", "type": "string" }, "command": { "const": "idc_inspect", "type": "string" }, "version": { "$ref": "#/components/schemas/ShortString" }, "permissions": { "$ref": "#/components/schemas/Permissions" } } },
           "device": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "$ref": "#/components/schemas/UUID", "description": "Copied from the outer app-persistent device_id, not raw device metadata." } } }
         }
       },
@@ -190,12 +197,12 @@
       "TaskResponse": { "type": "object", "additionalProperties": false, "required": ["schema_version", "task"], "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "task": { "$ref": "#/components/schemas/Task" } } },
       "CollectionResponse": {
         "type": "object", "additionalProperties": false, "required": ["schema_version", "request_id", "task_id", "mode", "read_only", "state", "receipt", "task"],
-        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "task_id": { "$ref": "#/components/schemas/UUID" }, "mode": { "type": "string", "const": "mock" }, "read_only": { "type": "boolean", "const": true }, "state": { "$ref": "#/components/schemas/HealthState" }, "receipt": { "$ref": "#/components/schemas/Receipt" }, "task": { "$ref": "#/components/schemas/Task" } }
+        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/EvidenceId" }, "task_id": { "$ref": "#/components/schemas/UUID" }, "mode": { "type": "string", "const": "mock" }, "read_only": { "type": "boolean", "const": true }, "state": { "$ref": "#/components/schemas/HealthState" }, "receipt": { "$ref": "#/components/schemas/Receipt" }, "task": { "$ref": "#/components/schemas/Task" } }
       },
       "ErrorResponse": {
         "type": "object", "additionalProperties": false, "required": ["schema_version", "error"],
         "properties": {
-          "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID", "description": "Present only after successfully parsing a valid envelope request_id." },
+          "schema_version": { "$ref": "#/components/schemas/AnyVersion" }, "request_id": { "$ref": "#/components/schemas/EvidenceId", "description": "Present only after successfully parsing a valid envelope request_id." },
           "error": { "type": "object", "additionalProperties": false, "required": ["code", "message", "retryable"], "properties": { "code": { "type": "string", "enum": ["invalid_request", "unauthorized", "origin_not_allowed", "not_found", "method_not_allowed", "revision_conflict", "idempotency_conflict", "request_too_large", "raw_snapshot_too_large", "unsupported_media_type", "collection_failed", "device_capacity", "service_unavailable", "read_only"] }, "message": { "type": "string" }, "retryable": { "type": "boolean", "description": "True only for 503. 409 requires state refresh or a new ID, not blind retry." } } }
         }
       },
@@ -203,7 +210,7 @@
         "type": "object", "additionalProperties": false, "required": ["schema_version", "api_version", "mode", "read_only", "collection", "demo_operations", "collection_operations", "destructive_actions_enabled", "agent_diagnostics", "tasks", "limits"],
         "properties": {
           "schema_version": { "$ref": "#/components/schemas/Version" }, "api_version": { "type": "string", "const": "v1" }, "mode": { "type": "string", "const": "mock" }, "read_only": { "type": "boolean", "const": true },
-          "collection": { "type": "object", "additionalProperties": false, "required": ["collector", "profiles", "arbitrary_commands"], "properties": { "collector": { "type": "string", "const": "sysak" }, "profiles": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Profile" } }, "arbitrary_commands": { "type": "boolean", "const": false } } },
+          "collection": { "type": "object", "additionalProperties": false, "required": ["collector", "command", "profiles", "arbitrary_commands"], "properties": { "collector": { "type": "string", "const": "sysak" }, "command": { "type": "string", "const": "idc_inspect" }, "profiles": { "type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Profile" } }, "arbitrary_commands": { "type": "boolean", "const": false } } },
           "agent_diagnostics": { "$ref": "#/components/schemas/AgentDiagnosticCapabilities" },
           "demo_operations": { "type": "array", "const": [] }, "collection_operations": { "type": "array", "const": ["snapshot", "reset", "inspect"] }, "destructive_actions_enabled": { "type": "boolean", "const": false },
           "tasks": { "type": "object", "additionalProperties": false, "required": ["execution", "statuses", "asynchronous_supported"], "properties": { "execution": { "type": "string", "const": "synchronous" }, "statuses": { "type": "array", "const": ["completed"] }, "asynchronous_supported": { "type": "boolean", "const": false } } },
@@ -223,7 +230,7 @@
       "AgentDiagnosticRequest": {
         "type": "object", "additionalProperties": false, "x-max-request-bytes": 10485760,
         "required": ["schema_version", "request_id", "device_id", "raw_snapshot"],
-        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "device_id": { "$ref": "#/components/schemas/UUID" }, "raw_snapshot": { "$ref": "#/components/schemas/AgentRawSnapshot" } }
+        "properties": { "schema_version": { "$ref": "#/components/schemas/AgentVersion" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "device_id": { "$ref": "#/components/schemas/UUID" }, "raw_snapshot": { "$ref": "#/components/schemas/AgentRawSnapshot" } }
       },
       "AgentDateTime": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$" },
       "AgentWindow": { "type": "object", "additionalProperties": false, "required": ["start", "end"], "description": "Valid calendar timestamps: start <= end <= sampled_at. Window is supplied by the collector, not inferred from row counts.", "properties": { "start": { "$ref": "#/components/schemas/AgentDateTime" }, "end": { "$ref": "#/components/schemas/AgentDateTime" } } },
@@ -231,7 +238,7 @@
         "type": "object", "additionalProperties": false, "x-max-json-bytes": 8388608,
         "required": ["schema_version", "source", "sampled_at", "window", "sources"],
         "properties": {
-          "schema_version": { "$ref": "#/components/schemas/Version" }, "source": { "const": "agentsight" }, "sampled_at": { "$ref": "#/components/schemas/AgentDateTime" }, "window": { "$ref": "#/components/schemas/AgentWindow" },
+          "schema_version": { "$ref": "#/components/schemas/AgentVersion" }, "source": { "const": "agentsight" }, "sampled_at": { "$ref": "#/components/schemas/AgentDateTime" }, "window": { "$ref": "#/components/schemas/AgentWindow" },
           "sources": {
             "type": "object", "additionalProperties": false, "description": "Sources may be missing or unavailable. Invalid individual source content is accepted only to report invalid coverage, not interpreted as evidence. No command lines, paths, user questions or interruption detail fields.",
             "properties": {
@@ -319,7 +326,7 @@
       },
       "AgentDiagnosticResponse": {
         "type": "object", "additionalProperties": false, "required": ["schema_version", "request_id", "task_id", "mode", "read_only", "report", "task"],
-        "properties": { "schema_version": { "$ref": "#/components/schemas/Version" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "task_id": { "$ref": "#/components/schemas/UUID" }, "mode": { "const": "mock" }, "read_only": { "const": true }, "report": { "$ref": "#/components/schemas/AgentDiagnostic" }, "task": { "$ref": "#/components/schemas/Task", "properties": { "operation": { "const": "agent-diagnose" } } } }
+        "properties": { "schema_version": { "$ref": "#/components/schemas/AgentVersion" }, "request_id": { "$ref": "#/components/schemas/UUID" }, "task_id": { "$ref": "#/components/schemas/UUID" }, "mode": { "const": "mock" }, "read_only": { "const": true }, "report": { "$ref": "#/components/schemas/AgentDiagnostic" }, "task": { "$ref": "#/components/schemas/Task", "properties": { "operation": { "const": "agent-diagnose" } } } }
       },
       "Quantity": {
         "type": "object", "additionalProperties": false, "required": ["value", "unit"],

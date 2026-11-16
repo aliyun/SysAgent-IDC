@@ -3,12 +3,21 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { runProcessAction } = require('./process-control.cjs');
-const { verifyRootInstallation, connectRootIdc } = require('./sysak-root.cjs');
 const { collectAgentEvidence, createAgentSightService, controlAgentCollection } = require('./agentsight-client.cjs');
+const { loadSysomConfig, sysakChildEnv, createSysomClient } = require('./sysom-client.cjs');
 
 const MAX_RAW_BYTES = 8 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// 预发自动上传时 sysAK 把主报告 request_id 覆盖为 32 位十六进制 inspection_id。
+const INSPECTION_ID = /^[0-9a-f]{32}$/i;
 const operations = new Set(['snapshot', 'reset', 'inspect', 'cleanup', 'optimize', 'sessions-cleanup', 'alert-sample']);
+const SYSAK_COMMAND = 'idc_inspect';
+const SYSAK_SCHEMA = '1.1';
+const SYSAK_PROFILE = 'inspection';
+const SYSAK_ROOT = '/usr/local/sysak';
+// idc_inspect 内部预算 24s、硬超时 30s，外层留出回收余量。
+const COLLECTION_TIMEOUT_MS = 45000;
+const PROCESS_RANKINGS = ['top_cpu', 'top_rss', 'top_sys', 'top_blkio_wait', 'top_d_state'];
 
 class CollectorError extends Error {
   constructor(code, message, status = 503, retryable = false) {
@@ -19,39 +28,71 @@ class CollectorError extends Error {
   }
 }
 
-function verifyBundle(root) {
-  if (process.platform !== 'linux') throw new CollectorError('UNSUPPORTED_PLATFORM', '本地 sysAK 采集目前仅支持 Linux');
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
-  if (manifest.schema_version !== '1.0' || manifest.platform !== 'linux' || manifest.arch !== process.arch ||
-      !manifest.commands?.includes('idc') || !manifest.files ||
-      typeof manifest.files !== 'object' || !manifest.files.sysak) {
-    throw new CollectorError('INVALID_BUNDLE', 'sysAK 组件清单或架构不匹配，请重新安装完整软件包');
-  }
-  const resolvedRoot = fs.realpathSync(root);
-  for (const [relative, digest] of Object.entries(manifest.files)) {
-    const file = path.resolve(root, relative);
-    if (!file.startsWith(`${path.resolve(root)}${path.sep}`) ||
-        !fs.realpathSync(file).startsWith(`${resolvedRoot}${path.sep}`) ||
-        typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest) ||
-        crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== digest) {
-      throw new CollectorError('INVALID_BUNDLE', 'sysAK 组件校验失败，请重新安装完整软件包');
-    }
-  }
-  fs.accessSync(path.join(root, 'sysak'), fs.constants.X_OK);
-  return manifest;
+function isFile(file, mode) {
+  try {
+    if (!fs.statSync(file).isFile()) return false;
+    fs.accessSync(file, mode);
+    return true;
+  } catch { return false; }
 }
 
-function collectRaw(binary, profile, requestId, signal, { spawnImpl = spawn, launchImpl = connectRootIdc, killGroup = (pid, signal) => process.kill(-pid, signal), timeoutMs = 35000 } = {}) {
+// 与 sysak 的 set_path 一致：优先二进制同目录组件，其次固定安装根目录。
+function componentsFor(binary) {
+  const beside = path.join(path.dirname(fs.realpathSync(binary)), '.sysak_components');
+  return fs.existsSync(beside) ? beside : path.join(SYSAK_ROOT, '.sysak_components');
+}
+
+function resolveSysak({ sysakBinary } = {}) {
+  if (process.platform !== 'linux') throw new CollectorError('UNSUPPORTED_PLATFORM', '本地 sysAK 采集目前仅支持 Linux');
+  const override = sysakBinary || process.env.SYSOM_SYSAK_BIN;
+  const candidates = override ? [override] : ['/usr/bin/sysak', '/usr/local/bin/sysak',
+    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map((directory) => path.join(directory, 'sysak'))];
+  const binary = candidates.map((candidate) => path.resolve(candidate)).find((candidate) => isFile(candidate, fs.constants.X_OK));
+  if (!binary) throw new CollectorError('SYSAK_NOT_FOUND', '未找到已安装的 sysAK，请先安装 sysak 软件包后重试');
+  const components = componentsFor(binary);
+  const rules = path.join(components, 'tools', '.sysak.rules');
+  // 组件缺失时 sysak 会尝试联网下载，必须在启动前拦截。
+  if (!isFile(path.join(components, 'tools', SYSAK_COMMAND), fs.constants.R_OK) || !isFile(rules, fs.constants.R_OK) ||
+      !fs.readFileSync(rules, 'utf8').split('\n').some((line) => line.split(':')[1] === SYSAK_COMMAND)) {
+    throw new CollectorError('SYSAK_COMPONENT_MISSING', `sysAK 已安装但缺少 ${SYSAK_COMMAND} 组件，请安装包含该组件的 sysak 软件包`);
+  }
+  return { binary, components, source: override ? 'override' : 'system' };
+}
+
+// sysak 启动器用 printf 把组件诊断信息混入 stdout（sysak.c copy_file），只取首个完整 JSON 对象。
+function collectionJson(text) {
+  const start = text.indexOf('{');
+  if (start < 0) throw new Error('missing json');
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index++) {
+    const char = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === '{') depth++;
+    else if (char === '}' && --depth === 0) return text.slice(start, index + 1);
+  }
+  throw new Error('unterminated json');
+}
+
+function collectRaw(binary, requestId, signal, { spawnImpl = spawn, killGroup = (pid, signal) => process.kill(-pid, signal), timeoutMs = COLLECTION_TIMEOUT_MS, env, allowInspectionId = false } = {}) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new CollectorError('COLLECTION_CANCELLED', '本地采集已停止'));
-    const child = launchImpl(binary, ['idc', '--profile', profile, '--request-id', requestId, '-o', '-'], {
+    const childEnv = env || { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' };
+    const child = spawnImpl(binary, [SYSAK_COMMAND, '--request-id', requestId, '-o', '-'], {
       cwd: path.dirname(binary), detached: true, shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' },
-    }, spawnImpl);
+      env: childEnv,
+    });
     let size = 0;
     let stderrSize = 0;
+    let stderrCaptured = 0;
     const chunks = [];
+    const stderrChunks = [];
     let failure = null;
     let finished = false;
     let killTimer;
@@ -70,7 +111,7 @@ function collectRaw(binary, profile, requestId, signal, { spawnImpl = spawn, lau
           }
         }, 1000);
       } else {
-        child.kill();
+        try { child.kill('SIGTERM'); } catch {}
       }
     };
     const timer = setTimeout(() => stop(new CollectorError('COLLECTION_TIMEOUT', '本地采集超时，请稍后重试', 504, true)), timeoutMs);
@@ -82,35 +123,36 @@ function collectRaw(binary, profile, requestId, signal, { spawnImpl = spawn, lau
       if (size > MAX_RAW_BYTES) stop(new CollectorError('COLLECTION_TOO_LARGE', '原始采集结果超过 8 MiB 限制', 413));
       else chunks.push(chunk);
     });
-    child.stderr.on('data', (chunk) => { stderrSize += chunk.length; });
+    child.stderr.on('data', (chunk) => {
+      stderrSize += chunk.length;
+      if (stderrCaptured < 8192) { stderrChunks.push(chunk); stderrCaptured += chunk.length; }
+    });
     const cleanup = () => {
       finished = true;
       clearTimeout(timer);
       clearTimeout(killTimer);
       signal.removeEventListener('abort', abort);
     };
-    child.on('error', (error) => {
-      if (failure && error.code === 'EPERM') return;
+    child.once('error', () => {
       cleanup();
-      reject(error.code === 'ROOT_COLLECTOR_UNAVAILABLE' ? error :
-        new CollectorError('COLLECTOR_UNAVAILABLE', '无法连接 sysAK IDC 服务，请检查服务是否已安装并运行'));
+      reject(new CollectorError('COLLECTOR_UNAVAILABLE', '无法启动 sysAK，请检查组件与 Python 3 是否已安装'));
     });
     child.once('close', (code) => {
       cleanup();
       if (failure) return reject(failure);
-      if (code === 126 || code === 127) return reject(new CollectorError('ROOT_COLLECTOR_UNAVAILABLE', 'sysAK IDC 服务身份或组件校验失败，请检查安装与用户授权', 403));
-      if (code === 75) return reject(new CollectorError('ROOT_SERVICE_BUSY', 'sysAK IDC 服务正在处理其他请求，请稍后重试', 503, true));
-      if (code === 125) return reject(new CollectorError('COLLECTION_TOO_LARGE', 'sysAK IDC 服务响应超过限制', 413));
-      if (code === 124) return reject(new CollectorError('COLLECTION_TIMEOUT', 'root sysAK 采集超过执行时限', 504, true));
       if (code !== 0) return reject(new CollectorError('COLLECTION_FAILED', 'sysAK 采集未正常完成', 503, true));
       try {
-        const raw = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (raw.schema_version !== '1.0' || raw.request_id !== requestId || raw.collector?.name !== 'sysak' ||
-            raw.collection?.profile !== profile || !['ok', 'partial'].includes(raw.collection?.status) ||
-            !raw.resources || !raw.configuration || !raw.diagnostics || raw.capabilities?.read_only !== true) {
+        const raw = JSON.parse(collectionJson(Buffer.concat(chunks).toString('utf8')));
+        const section = (name) => raw.sections?.[name] && typeof raw.sections[name] === 'object' && !Array.isArray(raw.sections[name]);
+        const identityOk = raw.request_id === requestId || (allowInspectionId && INSPECTION_ID.test(raw.request_id));
+        if (raw.schema_version !== SYSAK_SCHEMA || !identityOk || raw.collector?.name !== 'sysak' ||
+            raw.collector?.command !== SYSAK_COMMAND || raw.collection?.profile !== SYSAK_PROFILE ||
+            !['ok', 'partial'].includes(raw.collection?.status) || typeof raw.collection?.finished_at !== 'string' ||
+            !raw.host || !raw.device || raw.capabilities?.read_only !== true ||
+            !['cpu', 'memory', 'disk', 'fd'].every(section)) {
           throw new Error('invalid collection');
         }
-        resolve({ raw, bytes: size, stderrBytes: stderrSize });
+        resolve({ raw, bytes: size, stderrBytes: stderrSize, stderrText: Buffer.concat(stderrChunks).toString('utf8') });
       } catch {
         reject(new CollectorError('INVALID_COLLECTION', 'sysAK 返回了无效的原始采集 JSON', 502, true));
       }
@@ -166,10 +208,41 @@ function validState(state) {
     });
 }
 
+function collectionSummary(raw) {
+  return {
+    schema_version: raw.schema_version,
+    command: raw.collector.command,
+    version: typeof raw.collector.version === 'string' ? raw.collector.version : null,
+    status: raw.collection.status,
+    collected_at: raw.collection.finished_at,
+    duration_ms: Number.isFinite(raw.collection.duration_ms) ? raw.collection.duration_ms : null,
+    sections: Object.entries(raw.collection.sections || {}).map(([name, value]) => ({
+      name, status: value?.status ?? 'unknown', reason: value?.reason ?? '',
+    })),
+  };
+}
+
+// 把 getHostInspection 的扁平任务视图归一为桌面云端巡检展示字段。
+function cloudTaskView(task) {
+  return {
+    status: typeof task?.status === 'string' ? task.status : 'queued',
+    phase: typeof task?.phase === 'string' ? task.phase : null,
+    progress: Number.isFinite(task?.progress) ? task.progress : 0,
+    reportId: typeof task?.reportId === 'string' ? task.reportId : null,
+    reportStatus: typeof task?.reportStatus === 'string' ? task.reportStatus : null,
+  };
+}
+
+const array = (value) => Array.isArray(value) ? value : [];
+
 async function createIdcController(options) {
   const { bundleRoot, deviceId = crypto.randomUUID(), startMockOpenApi, hasGpu = true, settingsPath,
     inspectionIntervalMinutes = 5, scheduler = { now: Date.now, setTimeout, clearTimeout } } = options;
   if (!UUID.test(deviceId)) throw new CollectorError('INVALID_DEVICE_ID', '设备标识无效', 400);
+  // 预发模式：env 提供 endpoint+AK/SK 时启用 sysAK 自动上传(步骤1–4)与桌面步骤5；
+  // 缺凭证则回退纯本地 mock。sysomConfig 仅供单测注入。
+  const config = options.sysomConfig !== undefined ? options.sysomConfig : loadSysomConfig();
+  const collectOptions = { ...options, env: sysakChildEnv(config), allowInspectionId: !!config };
   function validateInterval(minutes) {
     if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
       throw new CollectorError('INVALID_INSPECTION_INTERVAL', '巡检周期必须为 1–1440 的整数分钟', 400);
@@ -194,22 +267,19 @@ async function createIdcController(options) {
   }
   let installed = false;
   let installError = null;
-  try {
-    verifyBundle(bundleRoot);
-    (options.verifyExecutionImpl || verifyRootInstallation)(path.join(bundleRoot, 'sysak'));
-    installed = true;
-  } catch (error) {
-    installError = error instanceof CollectorError ? error : new CollectorError(
-      error.code === 'ROOT_COLLECTOR_UNAVAILABLE' ? error.code : 'COLLECTOR_UNAVAILABLE',
-      error.code === 'ROOT_COLLECTOR_UNAVAILABLE' ? error.message : 'sysAK 采集组件尚未随应用安装');
-  }
+  let sysak = null;
+  try { sysak = resolveSysak(options); installed = true; }
+  catch (error) { installError = error instanceof CollectorError ? error : new CollectorError('SYSAK_NOT_FOUND', '未找到已安装的 sysAK，请先安装 sysak 软件包后重试'); }
   const token = crypto.randomBytes(32).toString('hex');
   const api = await startMockOpenApi({ token });
+  // 步骤5只读客户端：仅在预发模式创建；sysomClient 供单测注入假替身，不触网。
+  const sysom = config ? (options.sysomClient || createSysomClient(config)) : null;
   let enabled = true;
   let closed = false;
   let phase = installed ? 'idle' : 'error';
   let lastError = installError || settingsError;
   let lastTask = null;
+  let lastCollection = null;
   const tasks = [];
   let queryServer = null;
   let queryError = null;
@@ -217,7 +287,7 @@ async function createIdcController(options) {
   let processTargets = new Map();
   let cleanupPlan = null;
   const localOperations = [];
-  const processAction = options.processActionImpl || ((action, targets) => runProcessAction(path.join(bundleRoot, 'sysak'), action, targets));
+  const processAction = options.processActionImpl || ((action, targets) => runProcessAction(sysak.binary, action, targets));
   let queue = Promise.resolve();
   let active = null;
   let snapshotPending = null;
@@ -225,6 +295,10 @@ async function createIdcController(options) {
   let agentCached = null;
   let agentCachedAt = null;
   let agentActive = null;
+  let cloudInspection = null;
+  let cloudPollController = null;
+  let cloudGeneration = 0;
+  // AgentSight 采集服务仍由 root 辅助进程管理；资源采集与进程操作已降到当前用户。
   const agentService = options.agentSightService ? createAgentSightService({
     ...options.agentSight,
     collectionControlImpl: options.agentSight?.collectionControlImpl || (action => controlAgentCollection(path.join(bundleRoot, 'sysak'), action)),
@@ -240,9 +314,12 @@ async function createIdcController(options) {
     return pending;
   };
   function status() {
-    return { schema_version: '1.0', mode: 'mock', read_only: true, device_id: deviceId, installed, enabled: enabled && !closed,
+    return { schema_version: SYSAK_SCHEMA, mode: config ? 'pre' : 'mock', read_only: true, device_id: deviceId, installed, enabled: enabled && !closed,
       phase, api_version: '1.0', last_task: lastTask, inspection_interval_minutes: intervalMinutes,
       next_inspection_at: nextInspectionAt, error: lastError ? { code: lastError.code, message: lastError.message } : null,
+      collector: { name: 'sysak', command: SYSAK_COMMAND, schema_version: SYSAK_SCHEMA,
+        binary: sysak?.binary ?? null, source: sysak?.source ?? null, version: lastCollection?.version ?? null },
+      collection: lastCollection, cloud_inspection: cloudInspection,
       query_api: { enabled: !!queryServer, base_url: queryServer?.baseUrl ?? null, instance_id: queryServer?.instanceId ?? null,
         error: queryError }, ...(agentService ? { agent_sight: agentService.status() } : {}) };
   }
@@ -290,12 +367,52 @@ async function createIdcController(options) {
     if (!installed) throw installError;
     if (!cached) throw new CollectorError('SNAPSHOT_REQUIRED', '请先刷新资源快照', 409);
   }
+  // 步骤5后台轮询：不阻塞采集队列；新采集取代旧轮询，close/暂停可取消。
+  // 终态后取一次真实报告，全程只读，结果写入 cloudInspection 供 status() 透出。
+  function recordUploadFailure(stderrText) {
+    cloudPollController?.abort();
+    const line = (stderrText || '').split('\n').map((entry) => entry.trim()).find((entry) => entry.startsWith('idc_inspect: upload'));
+    const detail = line ? line.replace(/^idc_inspect:\s*/, '') : 'sysAK 未完成云端上传';
+    cloudInspection = { inspectionId: '', status: 'failed', phase: null, progress: 0, reportId: null, reportStatus: null,
+      report: null, error: { code: 'UploadFailed', message: `上传失败：${detail}；本次仅本地采集` }, updatedAt: new Date().toISOString() };
+  }
+  function startCloudPoll(inspectionId) {
+    cloudPollController?.abort();
+    const controller = new AbortController();
+    cloudPollController = controller;
+    const generation = ++cloudGeneration;
+    const stale = () => generation !== cloudGeneration || controller.signal.aborted;
+    const stamp = () => new Date().toISOString();
+    cloudInspection = { inspectionId, ...cloudTaskView(null), report: null, error: null, updatedAt: stamp() };
+    void (async () => {
+      try {
+        const task = await sysom.pollHostInspection(inspectionId, {
+          signal: controller.signal,
+          onProgress: (view) => { if (!stale()) cloudInspection = { ...cloudInspection, ...cloudTaskView(view), updatedAt: stamp() }; },
+        });
+        if (stale()) return;
+        cloudInspection = { ...cloudInspection, ...cloudTaskView(task), updatedAt: stamp() };
+        if (!task.reportId) return;
+        try {
+          const report = await sysom.getInspectionReport(task.reportId);
+          if (!stale()) cloudInspection = { ...cloudInspection, report, updatedAt: stamp() };
+        } catch (error) {
+          if (!stale()) cloudInspection = { ...cloudInspection, error: { code: error.code || 'ReportFetchFailed', message: error.message }, updatedAt: stamp() };
+        }
+      } catch (error) {
+        if (!stale()) cloudInspection = { ...cloudInspection, error: { code: error.code || 'CloudPollFailed', message: error.message }, updatedAt: stamp() };
+      }
+    })();
+  }
   async function annotateProcesses(raw, state) {
     cleanupPlan = null;
     processTargets = new Map();
-    const samples = raw.resources?.processes?.content?.samples;
-    const observed = Array.isArray(samples) ? samples.at(-1)?.processes : [];
-    const identities = new Map((Array.isArray(observed) ? observed : []).filter(p => Number.isSafeInteger(p.pid) && p.pid > 1 && Number.isSafeInteger(p.starttime) && p.starttime >= 0)
+    const sections = raw.sections || {};
+    const observed = [
+      ...PROCESS_RANKINGS.flatMap((name) => array(sections.process?.[name])),
+      ...array(sections.io?.by_disk), ...array(sections.io?.by_vfs), ...array(sections.fd?.top_procs),
+    ];
+    const identities = new Map(observed.filter(p => p && Number.isSafeInteger(p.pid) && p.pid > 1 && Number.isSafeInteger(p.starttime) && p.starttime >= 0)
       .map(p => [`process-${p.pid}-${p.starttime}`, { pid: p.pid, starttime: p.starttime }]));
     const rows = ['cpu', 'memory', 'disk'].flatMap(id => state.resources[id].rows);
     for (const item of Object.values(state.resources).flatMap(resource => resource.rows)) {
@@ -326,14 +443,17 @@ async function createIdcController(options) {
     if (!enabled || closed) throw new CollectorError('COLLECTOR_DISABLED', '本地采集已暂停，请先启用采集');
     if (!installed) throw installError;
     const requestId = crypto.randomUUID();
-    const profile = operation === 'inspect' ? 'inspection' : 'resources';
     active = new AbortController();
     const signal = active.signal;
     try {
       phase = 'collecting';
       lastError = null;
-      const result = await collectRaw(path.join(bundleRoot, 'sysak'), profile, requestId, signal, options);
+      const result = await collectRaw(sysak.binary, requestId, signal, collectOptions);
       if (signal.aborted) throw new CollectorError('COLLECTION_CANCELLED', '本地采集已停止');
+      // 预发模式：sysAK 上传成功时主报告 request_id 即 32 位 hex inspection_id；
+      // 上传失败回退 UUID 时不得当作云端任务去轮询步骤5。
+      const inspectionId = config && INSPECTION_ID.test(result.raw.request_id) ? result.raw.request_id : null;
+      const envelopeId = inspectionId || requestId;
       phase = 'submitting';
       const timeout = setTimeout(() => active?.abort(), 30000);
       let response;
@@ -341,14 +461,14 @@ async function createIdcController(options) {
         response = await fetch(`${api.baseUrl}/openapi/v1/collections`, {
           method: 'POST', signal,
           headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({ schema_version: '1.0', request_id: requestId, device_id: deviceId,
+          body: JSON.stringify({ schema_version: SYSAK_SCHEMA, request_id: envelopeId, device_id: deviceId,
             operation, parameters, raw_snapshot: result.raw }),
         });
         const text = await response.text();
         if (Buffer.byteLength(text) > 1024 * 1024) throw new CollectorError('INVALID_API_RESPONSE', 'OpenAPI 响应超过大小限制', 502);
         const parsed = JSON.parse(text);
         if (!response.ok) throw new CollectorError(parsed.error?.code || 'OPENAPI_FAILED', parsed.error?.message || 'OpenAPI 请求失败', response.status, parsed.error?.retryable === true);
-        if (parsed.schema_version !== '1.0' || parsed.request_id !== requestId || parsed.mode !== 'mock' ||
+        if (parsed.schema_version !== SYSAK_SCHEMA || parsed.request_id !== envelopeId || parsed.mode !== 'mock' ||
             parsed.read_only !== true || parsed.state?.mode !== 'collected' || parsed.task?.simulated !== false ||
             !validState(parsed.state) || !UUID.test(parsed.task_id || '')) {
           throw new CollectorError('INVALID_API_RESPONSE', 'OpenAPI 返回了不兼容的展示数据', 502);
@@ -358,17 +478,19 @@ async function createIdcController(options) {
         await annotateProcesses(result.raw, nextState);
         if (signal.aborted) throw new CollectorError('COLLECTION_CANCELLED', '本地采集已停止');
         cached = nextState;
-        lastTask = { id: parsed.task_id, request_id: requestId, operation, status: parsed.task?.status || 'completed',
-          profile, collection_status: result.raw.collection.status, raw_bytes: result.bytes,
-          collected_at: result.raw.collection.finished_at, simulated: parsed.task.simulated };
+        lastCollection = collectionSummary(result.raw);
+        lastTask = { id: parsed.task_id, request_id: envelopeId, operation, status: parsed.task?.status || 'completed',
+          profile: SYSAK_PROFILE, collection_status: result.raw.collection.status, raw_bytes: result.bytes,
+          collected_at: result.raw.collection.finished_at, simulated: parsed.task.simulated,
+          uploaded: !!inspectionId, ...(inspectionId ? { inspection_id: inspectionId } : {}) };
         rememberTask(lastTask);
         phase = 'idle';
+        if (config && inspectionId) startCloudPoll(inspectionId);
+        else if (config) recordUploadFailure(result.stderrText);
         return structuredClone(cached);
       } finally { clearTimeout(timeout); }
     } catch (error) {
-      lastError = error instanceof CollectorError ? error : error.code === 'ROOT_COLLECTOR_UNAVAILABLE'
-        ? new CollectorError(error.code, error.message)
-        : new CollectorError('OPENAPI_UNAVAILABLE', '模拟 OpenAPI 暂不可用，请稍后重试', 503, true);
+      lastError = error instanceof CollectorError ? error : new CollectorError('OPENAPI_UNAVAILABLE', '模拟 OpenAPI 暂不可用，请稍后重试', 503, true);
       phase = enabled && !closed ? 'error' : 'disabled';
       throw lastError;
     } finally { active = null; }
@@ -517,7 +639,7 @@ async function createIdcController(options) {
       enabled = value;
       cleanupPlan = null;
       clearInspectionTimer();
-      if (!value) { active?.abort(); agentActive?.abort(); phase = 'disabled'; }
+      if (!value) { active?.abort(); agentActive?.abort(); cloudPollController?.abort(); phase = 'disabled'; }
       else { lastError = installError; phase = installed ? 'idle' : 'error'; scheduleInspection(); }
       return status();
     },
@@ -550,6 +672,7 @@ async function createIdcController(options) {
       phase = 'disabled';
       active?.abort();
       agentActive?.abort();
+      cloudPollController?.abort();
       const queryClosing = queryServer?.close();
       queryServer = null;
       await Promise.all([queue, queryClosing, agentService?.close()]);
@@ -558,4 +681,4 @@ async function createIdcController(options) {
   };
 }
 
-module.exports = { CollectorError, collectRaw, createIdcController, verifyBundle, validState };
+module.exports = { CollectorError, collectRaw, collectionJson, createIdcController, resolveSysak, validState };

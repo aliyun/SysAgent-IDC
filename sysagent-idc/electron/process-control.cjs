@@ -1,13 +1,12 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const { connectRootIdc } = require('./sysak-root.cjs');
 
-function runProcessAction(binary, action, targets, { spawnImpl = spawn, launchImpl = connectRootIdc, managerPid = process.pid } = {}) {
+function runProcessAction(binary, action, targets, { spawnImpl = spawn, managerPid = process.pid, timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = launchImpl(binary, ['idc', '--process-action', action], {
+    const child = spawnImpl(binary, ['idc_inspect', '--process-action', action], {
       cwd: path.dirname(binary), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' },
-    }, spawnImpl);
+    });
     const chunks = [];
     let bytes = 0;
     let failure;
@@ -18,7 +17,7 @@ function runProcessAction(binary, action, targets, { spawnImpl = spawn, launchIm
       try { child.kill('SIGTERM'); } catch {}
       reject(failure);
     };
-    const timer = setTimeout(() => fail('进程操作超时，结果可能不完整，请刷新后核对'), 15000);
+    const timer = setTimeout(() => fail('进程操作超时，结果可能不完整，请刷新后核对'), timeoutMs);
     child.stdout.on('data', (chunk) => {
       if (failure) return;
       bytes += chunk.length;
@@ -27,12 +26,10 @@ function runProcessAction(binary, action, targets, { spawnImpl = spawn, launchIm
     });
     child.stderr.on('data', () => {});
     child.stdin.on('error', () => {});
-    child.on('error', error => { clearTimeout(timer); if (!failure) reject(error.code === 'ROOT_COLLECTOR_UNAVAILABLE' ? error : new Error('无法启动 sysAK 进程操作')); });
+    child.on('error', () => { clearTimeout(timer); if (!failure) reject(new Error('无法启动 sysAK 进程操作')); });
     child.once('close', (code) => {
       clearTimeout(timer);
       if (failure) return reject(failure);
-      if (code === 126 || code === 127) return reject(new Error('sysAK IDC 服务身份或组件校验失败'));
-      if (code === 75) return reject(new Error('sysAK IDC 服务忙，请稍后重试'));
       if (code !== 0) return reject(new Error('sysAK 进程操作不可用'));
       try {
         const reply = JSON.parse(Buffer.concat(chunks).toString('utf8'));

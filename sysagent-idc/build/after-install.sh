@@ -70,7 +70,7 @@ for directory in "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak
     require_safe_chain "$directory"
 done
 for file in "$ROOT_HELPER" "$GX_HELPER" "$UNIT_SOURCE" "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" \
-    "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai" "$TOOLS_DIR/.sysak.rules"; do
+    "$TOOLS_DIR/idc_inspect" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai" "$TOOLS_DIR/.sysak.rules"; do
     require_file "$file"
 done
 for module in resource_anomaly_idc fdleak_metrics plugin_abnormalPackages plugin_anonTaskTop plugin_cache plugin_memcgLeak plugin_memfrag plugin_memgraph plugin_meminfo plugin_memleak plugin_podDetect plugin_system plugin_taskProc plugin_vmRssTaskTop plugin_skcheck plugin_appmem mem_utils plugin_thpCollect; do
@@ -81,7 +81,7 @@ for directory in "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR"; do
     for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         case "$entry" in
-            "$SYSAK_DIR/sysak"|"$SYSAK_DIR/manifest.json"|"$SYSAK_DIR/.sysak_components"|"$TOOLS_DIR"|"$TOOLS_DIR/idc"|"$TOOLS_DIR/resource_anomaly"|"$TOOLS_DIR/memgraph"|"$TOOLS_DIR/ai"|"$TOOLS_DIR/.sysak.rules") continue ;;
+            "$SYSAK_DIR/sysak"|"$SYSAK_DIR/manifest.json"|"$SYSAK_DIR/.sysak_components"|"$TOOLS_DIR"|"$TOOLS_DIR/idc_inspect"|"$TOOLS_DIR/resource_anomaly"|"$TOOLS_DIR/memgraph"|"$TOOLS_DIR/ai"|"$TOOLS_DIR/.sysak.rules") continue ;;
         esac
         allowed=0
         for module in resource_anomaly_idc fdleak_metrics plugin_abnormalPackages plugin_anonTaskTop plugin_cache plugin_memcgLeak plugin_memfrag plugin_memgraph plugin_meminfo plugin_memleak plugin_podDetect plugin_system plugin_taskProc plugin_vmRssTaskTop plugin_skcheck plugin_appmem mem_utils plugin_thpCollect; do
@@ -106,7 +106,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 tools = '.sysak_components/tools'
-commands = ['idc', 'resource_anomaly', 'memgraph', 'ai']
+commands = ['idc_inspect', 'resource_anomaly', 'memgraph', 'ai']
 profiles = {'resource_anomaly': ['--idc'], 'memgraph': ['--graph', '--jsonstdout'], 'ai': ['--threshold', '1s']}
 modules = [
     'resource_anomaly_idc', 'fdleak_metrics',
@@ -165,7 +165,7 @@ SYSAK_MANIFEST_PY
 
 # Ordinary users can traverse/read/run the bundled tools; no privilege bits.
 chmod 755 "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR"
-chmod 755 "$SYSAK_DIR/sysak" "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"
+chmod 755 "$SYSAK_DIR/sysak" "$TOOLS_DIR/idc_inspect" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"
 for module in resource_anomaly_idc fdleak_metrics plugin_abnormalPackages plugin_anonTaskTop plugin_cache plugin_memcgLeak plugin_memfrag plugin_memgraph plugin_meminfo plugin_memleak plugin_podDetect plugin_system plugin_taskProc plugin_vmRssTaskTop plugin_skcheck plugin_appmem mem_utils plugin_thpCollect; do
     chmod 755 "$TOOLS_DIR/$module.py"
 done
@@ -173,7 +173,7 @@ chmod 644 "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules"
 chmod 755 "$ROOT_HELPER" "$GX_HELPER"
 chmod 644 "$UNIT_SOURCE"
 chown root:root "$APP_DIR" "$APP_DIR/resources" "$SYSAK_DIR" "$SYSAK_DIR/.sysak_components" "$TOOLS_DIR" "$ROOT_HELPER" "$GX_HELPER" "$UNIT_SOURCE"
-chown root:root "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules" "$TOOLS_DIR/idc" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"
+chown root:root "$SYSAK_DIR/sysak" "$SYSAK_DIR/manifest.json" "$TOOLS_DIR/.sysak.rules" "$TOOLS_DIR/idc_inspect" "$TOOLS_DIR/resource_anomaly" "$TOOLS_DIR/memgraph" "$TOOLS_DIR/ai"
 for module in resource_anomaly_idc fdleak_metrics plugin_abnormalPackages plugin_anonTaskTop plugin_cache plugin_memcgLeak plugin_memfrag plugin_memgraph plugin_meminfo plugin_memleak plugin_podDetect plugin_system plugin_taskProc plugin_vmRssTaskTop plugin_skcheck plugin_appmem mem_utils plugin_thpCollect; do
     chown root:root "$TOOLS_DIR/$module.py"
 done

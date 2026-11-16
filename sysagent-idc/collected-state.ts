@@ -6,81 +6,77 @@ const number = (value: unknown): value is number => typeof value === 'number' &&
 const positive = (value: unknown): value is number => number(value) && value > 0;
 const percent = (value: number) => Math.round(Math.max(0, Math.min(100, value)) * 10) / 10;
 const text = (value: unknown, fallback: string) => typeof value === 'string' ? value.slice(0, 256) : fallback;
-function content(value: unknown): unknown {
-  return obj(value) && ['ok', 'partial', 'truncated'].includes(String(value.status)) ? value.content : undefined;
-}
-function record(value: unknown): ObjectValue | undefined {
-  const result = content(value);
-  return obj(result) ? result : undefined;
-}
+const CRITICAL_LOG_CATEGORIES = ['hung_task', 'soft_lockup', 'hard_lockup', 'rcu_stall', 'fs_error', 'io_error', 'oom', 'nfs_hang', 'gpu_xid'];
 function entries(value: unknown): ObjectValue[] {
   return Array.isArray(value) ? value.filter(obj) : [];
 }
+// schema 1.1 的段数据与 status/reason 同级，没有 1.0 的 content 包装。
+function section(raw: ObjectValue, name: string): ObjectValue | undefined {
+  const sections = obj(raw.sections) ? raw.sections : {};
+  return obj(sections[name]) ? sections[name] as ObjectValue : undefined;
+}
+const usable = (value: ObjectValue | undefined) => !!value && ['ok', 'partial'].includes(String(value.status));
+const reasonOf = (value: ObjectValue | undefined) => {
+  const reason = value?.reason;
+  return typeof reason === 'string' && reason ? `；原因 ${reason}` : '';
+};
 function row(id: string, name: string, detail: string, usage: number, extra: Partial<ResourceRow> = {}): ResourceRow {
   return { id, name, detail, usage, cleanable: false, defaultSelected: false, effect: '只读采集，不支持清理', ...extra };
-}
-function cpuCounters(value: unknown): number[] | undefined {
-  const raw = content(value);
-  if (typeof raw !== 'string') return;
-  const line = raw.split('\n').find((line) => /^cpu\s/.test(line));
-  const counters = line?.trim().split(/\s+/).slice(1, 9).map(Number);
-  if (counters && counters.length === 8 && counters.every((value) => number(value) && Number.isSafeInteger(value))) return counters;
-}
-function meminfo(value: unknown): Record<string, number> {
-  const raw = content(value);
-  const result: Record<string, number> = {};
-  if (typeof raw !== 'string') return result;
-  for (const line of raw.split('\n')) {
-    const match = /^([A-Za-z_()]+):\s*(\d+)\s+kB\s*$/.exec(line);
-    if (match && Number.isSafeInteger(Number(match[2]) * 1024)) result[match[1]] = Number(match[2]) * 1024;
-  }
-  return result;
 }
 function measured(resource: ResourceSnapshot, usage: number | null, evidence: unknown, note: string) {
   resource.usage = usage;
   resource.status = usage === null && !resource.quantity ? 'unavailable' : obj(evidence) && evidence.status !== 'ok' ? 'partial' : 'available';
   resource.note = note;
 }
-function processRows(resources: ObjectValue, output: HealthState['resources'], totalMemory: number | undefined) {
-  const data = record(resources.processes);
-  const samples = entries(data?.samples);
-  if (samples.length !== 2) return;
-  const [first, second] = samples;
-  const elapsed = number(first.monotonic_seconds) && number(second.monotonic_seconds) ? second.monotonic_seconds - first.monotonic_seconds : 0;
-  const count = content(resources.cpu_count);
-  const ticks = data?.clock_ticks;
-  const previous = new Map(entries(first.processes).filter((p) => Number.isSafeInteger(p.pid) && Number.isSafeInteger(p.starttime)).map((p) => [`${p.pid}:${p.starttime}`, p]));
-  for (const process of entries(second.processes).slice(0, 4096)) {
-    if (!Number.isSafeInteger(process.pid) || !number(process.pid) || !Number.isSafeInteger(process.starttime)) continue;
-    const pid = process.pid;
-    const before = previous.get(`${pid}:${process.starttime}`);
-    const name = text(process.comm, `PID ${pid}`);
-    const id = `process-${pid}-${process.starttime}`;
-    const agentKind = recognizeAgent(name);
-    const identity = { pid, starttime: process.starttime as number, ...(agentKind ? { agentKind } : {}) };
-    if (positive(totalMemory) && number(process.rss_bytes) && process.rss_bytes <= totalMemory) {
-      output.memory.rows.push(row(id, name, `PID ${pid} · RSS 常驻内存，共享页可能重复计入`, percent(process.rss_bytes / totalMemory * 100), { ...identity, quantity: { value: process.rss_bytes, unit: 'B' } }));
-    }
-    if (!before || elapsed <= 0) continue;
-    if (positive(ticks) && positive(count) && [process.utime, process.stime, before.utime, before.stime].every(number)) {
-      const delta = (process.utime as number) + (process.stime as number) - (before.utime as number) - (before.stime as number);
-      if (number(delta) && (process.utime as number) >= (before.utime as number) && (process.stime as number) >= (before.stime as number)) output.cpu.rows.push(row(id, name, `PID ${pid} · 占整机 CPU 容量`, percent(delta / ticks / elapsed / count * 100), identity));
-    }
-    if (process.io_status === 'ok' && before.io_status === 'ok' && obj(process.io) && obj(before.io) && [process.io.read_bytes, process.io.write_bytes, before.io.read_bytes, before.io.write_bytes].every(number)) {
-      const read = (process.io.read_bytes as number) - (before.io.read_bytes as number);
-      const write = (process.io.write_bytes as number) - (before.io.write_bytes as number);
-      if (read >= 0 && write >= 0) {
-        const rate = (read + write) / elapsed;
-        if (number(rate)) output.disk.rows.push(row(id, name, `PID ${pid} · 读写吞吐，不代表磁盘空间归属`, rate, { ...identity, quantity: { value: rate, unit: 'B/s' } }));
-      }
-    }
+function identityOf(process: ObjectValue): { pid: number; starttime: number; agentKind?: string } | undefined {
+  const pid = process.pid;
+  const starttime = process.starttime;
+  if (!Number.isSafeInteger(pid) || !number(pid) || pid <= 1 || !Number.isSafeInteger(starttime) || !number(starttime)) return;
+  const agentKind = recognizeAgent(text(process.comm, ''));
+  return { pid, starttime, ...(agentKind ? { agentKind } : {}) };
+}
+function rankRows(rows: ResourceRow[]) {
+  rows.sort((a, b) => b.usage - a.usage || (a.pid ?? 0) - (b.pid ?? 0));
+  return [...new Map([...rows.slice(0, 20), ...rows.filter(item => item.agentKind).slice(0, 20)].map(item => [item.id, item])).values()];
+}
+function processRows(raw: ObjectValue, output: HealthState['resources'], totalMemory: number | undefined) {
+  const process = section(raw, 'process');
+  const io = section(raw, 'io');
+  for (const item of entries(process?.top_cpu)) {
+    const identity = identityOf(item);
+    const usage = item.cpu_pct_node;
+    if (!identity || !number(usage) || usage > 100) continue;
+    output.cpu.rows.push(row(`process-${identity.pid}-${identity.starttime}`, text(item.comm, `PID ${identity.pid}`), `PID ${identity.pid} · 占整机 CPU 容量`, percent(usage), identity));
   }
-  for (const id of ['cpu', 'memory', 'disk'] as const) {
-    output[id].rows.sort((a, b) => b.usage - a.usage || (a.pid ?? 0) - (b.pid ?? 0));
-    const ranked = output[id].rows;
-    output[id].rows = [...new Map([...ranked.slice(0, 20), ...ranked.filter(row => row.agentKind).slice(0, 20)].map(row => [row.id, row])).values()];
-    output[id].note += `；进程排行仅覆盖可见 /proc，${obj(resources.processes) && resources.processes.status === 'ok' ? '已完成有界采样' : '部分缺失、权限受限或扫描截断'}`;
+  for (const item of entries(process?.top_rss)) {
+    const identity = identityOf(item);
+    if (!identity || !number(item.rss_kb)) continue;
+    const bytes = item.rss_kb * 1024;
+    if (!Number.isSafeInteger(bytes) || !positive(totalMemory) || bytes > totalMemory) continue;
+    output.memory.rows.push(row(`process-${identity.pid}-${identity.starttime}`, text(item.comm, `PID ${identity.pid}`), `PID ${identity.pid} · RSS 常驻内存，共享页可能重复计入`, percent(bytes / totalMemory * 100), { ...identity, quantity: { value: bytes, unit: 'B' } }));
   }
+  const diskRows = new Map<string, ResourceRow>();
+  for (const item of entries(io?.by_disk)) {
+    const identity = identityOf(item);
+    const rate = item.disk_bytes_per_sec;
+    if (!identity || !number(rate)) continue;
+    const id = `process-${identity.pid}-${identity.starttime}`;
+    diskRows.set(id, row(id, text(item.comm, `PID ${identity.pid}`), `PID ${identity.pid} · 块设备读写吞吐，不代表磁盘空间归属`, rate, { ...identity, quantity: { value: rate, unit: 'B/s' } }));
+  }
+  for (const item of entries(io?.by_vfs)) {
+    const identity = identityOf(item);
+    const rate = item.vfs_bytes_per_sec;
+    if (!identity || !number(rate)) continue;
+    const id = `process-${identity.pid}-${identity.starttime}`;
+    if (diskRows.has(id)) continue;
+    diskRows.set(id, row(id, text(item.comm, `PID ${identity.pid}`), `PID ${identity.pid} · VFS 读写吞吐（含页缓存），不代表磁盘空间归属`, rate, { ...identity, quantity: { value: rate, unit: 'B/s' } }));
+  }
+  output.disk.rows.push(...diskRows.values());
+  const coverage = !usable(process) ? '进程段不可用' : process!.status === 'ok' && process!.truncated !== true ? '已完成有界采样' : '部分缺失、权限受限或扫描截断';
+  output.cpu.rows = rankRows(output.cpu.rows);
+  output.memory.rows = rankRows(output.memory.rows);
+  output.disk.rows = rankRows(output.disk.rows);
+  for (const id of ['cpu', 'memory', 'disk'] as const) output[id].note += `；进程排行仅覆盖可见 /proc 的 top_n 窗口，${coverage}`;
 }
 function gpuNumber(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number | null {
   const parsed = typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value.trim()) : value;
@@ -90,115 +86,79 @@ function gpuBytes(value: unknown): number | null {
   const mib = gpuNumber(value);
   return mib !== null && Number.isSafeInteger(mib * 1024 * 1024) ? mib * 1024 * 1024 : null;
 }
-function gpuResource(evidence: unknown, resource: ResourceSnapshot): boolean {
-  const raw = content(evidence);
-  if (obj(raw)) {
-    resource.gpuDevices = [];
-    if (raw.schema_version !== '1.0' || raw.tool !== 'idc' || raw.mode !== 'idc' || raw.read_only !== true || !['ok', 'partial', 'unavailable', 'error', 'timeout'].includes(String(raw.status))) {
-      resource.note = 'IDC nvidia-smi GPU 返回数据无效，不能判断硬件状态';
-      return true;
-    }
-    if (raw.available !== true || !Array.isArray(raw.devices)) {
-      resource.note = `IDC nvidia-smi GPU 快照不可用：${text(raw.reason, '工具、驱动或权限不可用')}；不代表没有 GPU`;
-      return true;
-    }
-    const seen = new Set<number>();
-    for (const device of entries(raw.devices).slice(0, 32)) {
-      const index = gpuNumber(device.index);
-      if (index === null || !Number.isSafeInteger(index) || seen.has(index)) continue;
-      seen.add(index);
-      let used = gpuBytes(device.mem_used);
-      const total = gpuBytes(device.mem_total);
-      if (used !== null && total !== null && used > total) used = null;
-      const gpu: GpuDevice = {
-        index, name: text(device.name, 'GPU'), uuid: text(device.uuid, ''), busId: text(device.bus_id, ''),
-        utilization: gpuNumber(device.util, 100), memoryUtilization: gpuNumber(device.mem_util_pct, 100),
-        memoryUsedBytes: used, memoryTotalBytes: total,
-        temperatureCelsius: gpuNumber(device.temp), powerWatts: gpuNumber(device.power_draw), powerLimitWatts: gpuNumber(device.power_limit),
-        eccCorrected: gpuNumber(device.ecc_corr), eccUncorrected: gpuNumber(device.ecc_uncorr),
-        pcieGeneration: gpuNumber(device.pcie_gen_cur), pcieMaxGeneration: gpuNumber(device.pcie_gen_max), pcieWidth: gpuNumber(device.pcie_width),
-      };
-      resource.gpuDevices.push(gpu);
-      if (gpu.utilization !== null) {
-        const detail = [used !== null && total !== null ? `显存 ${used / 1048576}/${total / 1048576} MiB` : '显存不可用', gpu.powerWatts !== null ? `${gpu.powerWatts} W` : '功率不可用', gpu.temperatureCelsius !== null ? `${gpu.temperatureCelsius} °C` : '温度不可用'].join(' · ');
-        resource.rows.push(row(`gpu-${index}`, gpu.name, detail, gpu.utilization));
-      }
-    }
-    const devices = resource.gpuDevices;
-    if (devices.length && devices.every(device => device.memoryUsedBytes !== null && device.memoryTotalBytes !== null)) {
-      const total = devices.reduce((sum, device) => sum + device.memoryTotalBytes!, 0);
-      const used = devices.reduce((sum, device) => sum + device.memoryUsedBytes!, 0);
-      if (total > 0 && Number.isSafeInteger(total) && Number.isSafeInteger(used)) resource.quantity = { value: used, unit: 'B', total, available: total - used };
-    }
-    const usage = resource.rows.length ? Math.max(...resource.rows.map(device => device.usage)) : null;
-    measured(resource, usage, evidence, 'IDC 按需 nvidia-smi GPU 快照；多卡显示最高利用率，无历史曲线或进程 GPU 利用率归属');
-    if (!devices.length) {
-      resource.note = raw.devices.length === 0 && raw.status === 'ok' ? 'IDC nvidia-smi GPU 查询成功，未检测到可见 NVIDIA GPU' : 'IDC nvidia-smi GPU 设备数据无效，不能判断硬件状态';
-    } else if (devices.length !== raw.devices.length || raw.gpu_count !== devices.length || raw.status !== 'ok' || devices.some(device => Object.values(device).some(value => value === null) || !device.uuid)) {
-      resource.status = 'partial';
-    }
-    resource.rows.sort((a, b) => b.usage - a.usage);
-    return !(obj(evidence) && evidence.status === 'ok' && raw.status === 'ok' && raw.devices.length === 0 && raw.gpu_count === 0);
+function gpuResource(raw: ObjectValue, resource: ResourceSnapshot): boolean {
+  const data = section(raw, 'gpu');
+  if (!data) {
+    resource.note = 'idc_inspect 未返回 gpu 段，不能判断硬件状态';
+    return true;
   }
-  if (typeof raw !== 'string') return true;
-  if (!raw.trim()) return !obj(evidence) || evidence.status !== 'ok';
-  let memoryTotal = 0;
-  let memoryUsed = 0;
-  let memoryComplete = true;
-  for (const [index, line] of raw.trim().split('\n').slice(0, 32).entries()) {
-    const fields = line.split(',').map((field) => field.trim());
-    if (fields.length !== 7) continue;
-    const value = (index: number) => /^\d+(?:\.\d+)?$/.test(fields[index]) && number(Number(fields[index])) ? Number(fields[index]) : null;
-    const usage = value(2);
-    const total = value(3);
-    const used = value(4);
-    const watts = value(5);
-    const temperature = value(6);
-    if (total !== null && used !== null && used <= total) { memoryTotal += total * 1024 * 1024; memoryUsed += used * 1024 * 1024; }
-    else memoryComplete = false;
-    if (usage === null || usage > 100) continue;
-    const detail = [total !== null && used !== null ? `显存 ${used}/${total} MiB` : '显存不可用', watts !== null ? `${watts} W` : '功率不可用', temperature !== null ? `${temperature} °C` : '温度不可用'].join(' · ');
-    resource.rows.push(row(`gpu-${index}`, text(fields[0], 'GPU'), detail, usage));
+  resource.gpuDevices = [];
+  if (data.available !== true || !Array.isArray(data.devices)) {
+    resource.note = `nvidia-smi GPU 快照不可用：${text(data.reason, '工具、驱动或权限不可用')}；不代表没有 GPU`;
+    return true;
   }
-  if (memoryComplete && memoryTotal > 0) resource.quantity = { value: memoryUsed, unit: 'B', total: memoryTotal, available: memoryTotal - memoryUsed };
-  const usage = resource.rows.length ? Math.max(...resource.rows.map((row) => row.usage)) : null;
-  measured(resource, usage, evidence, 'IDC 按需 nvidia-smi 实测；多卡显示最高利用率，不提供进程 GPU 利用率归属');
+  const seen = new Set<number>();
+  for (const device of entries(data.devices).slice(0, 32)) {
+    const index = gpuNumber(device.index);
+    if (index === null || !Number.isSafeInteger(index) || seen.has(index)) continue;
+    seen.add(index);
+    let used = gpuBytes(device.mem_used_mb);
+    const total = gpuBytes(device.mem_total_mb);
+    if (used !== null && total !== null && used > total) used = null;
+    const gpu: GpuDevice = {
+      index, name: text(device.name, 'GPU'), uuid: text(device.uuid, ''), busId: text(device.bus_id, ''),
+      utilization: gpuNumber(device.util_pct, 100), memoryUtilization: gpuNumber(device.mem_util_pct, 100),
+      memoryUsedBytes: used, memoryTotalBytes: total,
+      temperatureCelsius: gpuNumber(device.temp_c), powerWatts: gpuNumber(device.power_draw_w), powerLimitWatts: gpuNumber(device.power_limit_w),
+      eccCorrected: gpuNumber(device.ecc_corr), eccUncorrected: gpuNumber(device.ecc_uncorr),
+      pcieGeneration: gpuNumber(device.pcie_gen_cur), pcieMaxGeneration: gpuNumber(device.pcie_gen_max), pcieWidth: gpuNumber(device.pcie_width),
+    };
+    resource.gpuDevices.push(gpu);
+    if (gpu.utilization !== null) {
+      const detail = [used !== null && total !== null ? `显存 ${used / 1048576}/${total / 1048576} MiB` : '显存不可用', gpu.powerWatts !== null ? `${gpu.powerWatts} W` : '功率不可用', gpu.temperatureCelsius !== null ? `${gpu.temperatureCelsius} °C` : '温度不可用'].join(' · ');
+      resource.rows.push(row(`gpu-${index}`, gpu.name, detail, gpu.utilization));
+    }
+  }
+  const devices = resource.gpuDevices;
+  if (devices.length && devices.every(device => device.memoryUsedBytes !== null && device.memoryTotalBytes !== null)) {
+    const total = devices.reduce((sum, device) => sum + device.memoryTotalBytes!, 0);
+    const used = devices.reduce((sum, device) => sum + device.memoryUsedBytes!, 0);
+    if (total > 0 && Number.isSafeInteger(total) && Number.isSafeInteger(used)) resource.quantity = { value: used, unit: 'B', total, available: total - used };
+  }
+  const usage = resource.rows.length ? Math.max(...resource.rows.map(device => device.usage)) : null;
+  measured(resource, usage, data, 'idc_inspect nvidia-smi 单次 GPU 快照；多卡显示最高利用率，无历史曲线或进程 GPU 利用率归属');
+  if (!devices.length) {
+    resource.note = data.devices.length === 0 && data.status === 'ok' ? 'idc_inspect nvidia-smi 查询成功，未检测到可见 NVIDIA GPU' : 'idc_inspect GPU 设备数据无效，不能判断硬件状态';
+  } else if (devices.length !== data.devices.length || data.gpu_count !== devices.length || data.status !== 'ok' || devices.some(device => Object.values(device).some(value => value === null) || !device.uuid)) {
+    resource.status = 'partial';
+  }
   resource.rows.sort((a, b) => b.usage - a.usage);
-  return true;
+  return !(data.status === 'ok' && data.available === true && data.devices.length === 0 && data.gpu_count === 0);
 }
-function energyResource(evidence: unknown, resource: ResourceSnapshot) {
-  const data = record(evidence);
-  const samples = entries(data?.samples);
-  if (samples.length !== 2) return;
-  const elapsed = number(samples[0].monotonic_seconds) && number(samples[1].monotonic_seconds) ? samples[1].monotonic_seconds - samples[0].monotonic_seconds : 0;
-  if (elapsed <= 0) return;
-  const previous = new Map(entries(samples[0].zones).map((zone) => [zone.path, zone]));
+function energyResource(raw: ObjectValue, resource: ResourceSnapshot) {
+  const data = section(raw, 'energy');
+  if (!data) return;
+  const watts = data.total_watts;
+  if (data.available !== true || !number(watts)) {
+    resource.note = `RAPL 能耗不可用：${text(data.reason, '平台未暴露 package 能量域')}；不估算整机功耗`;
+    return;
+  }
   const seen = new Set<string>();
-  for (const zone of entries(samples[1].zones).slice(0, 32)) {
-    if (typeof zone.path !== 'string' || seen.has(zone.path) || typeof zone.name !== 'string' || !/^package(?:[-_]\d+)?$/.test(zone.name)) continue;
-    seen.add(zone.path);
-    const before = previous.get(zone.path);
-    if (!before || !number(before.energy_uj) || !number(zone.energy_uj)) continue;
-    let delta = zone.energy_uj - before.energy_uj;
-    if (delta < 0) {
-      if (!positive(zone.max_energy_range_uj) || zone.max_energy_range_uj !== before.max_energy_range_uj || before.energy_uj >= zone.max_energy_range_uj || zone.energy_uj >= zone.max_energy_range_uj) continue;
-      delta += zone.max_energy_range_uj;
-    }
-    const watts = delta / 1e6 / elapsed;
-    if (number(watts)) resource.rows.push(row(`rapl-${resource.rows.length}`, zone.name, 'CPU package RAPL 能量差分；非整机功耗', watts, { quantity: { value: watts, unit: 'W' } }));
+  for (const zone of entries(data.zones).slice(0, 32)) {
+    if (typeof zone.name !== 'string' || seen.has(zone.name) || !number(zone.watts)) continue;
+    seen.add(zone.name);
+    resource.rows.push(row(`rapl-${zone.name}`, text(zone.label, zone.name), 'CPU package RAPL 能量差分；非整机功耗', zone.watts, { quantity: { value: zone.watts, unit: 'W' } }));
   }
   if (!resource.rows.length) return;
-  resource.quantity = { value: resource.rows.reduce((sum, row) => sum + row.usage, 0), unit: 'W' };
-  measured(resource, null, evidence, 'CPU package RAPL 平均功率；不叠加重叠子域，不估算进程能耗或预算百分比');
-  if (resource.rows.length !== entries(samples[1].zones).length || resource.rows.length !== entries(samples[0].zones).length) resource.status = 'partial';
+  resource.quantity = { value: watts, unit: 'W' };
+  measured(resource, null, data, 'CPU package RAPL 平均功率；不叠加重叠子域，不估算进程能耗或预算百分比');
+  const unresolved = data.unresolved_wrap;
+  const denied = data.denied;
+  if (data.nr_zones !== resource.rows.length || number(unresolved) && unresolved > 0 || number(denied) && denied > 0) resource.status = 'partial';
   resource.rows.sort((a, b) => b.usage - a.usage);
 }
 function inspection(id: string, label: string, important: boolean, phase: 1 | 2): Inspection {
   return { id, label, important, phase, status: 'unchecked', usage: null, detail: '尚未接入真实诊断', evidence: [] };
-}
-function diagnosticContent(value: unknown): ObjectValue | undefined {
-  const data = record(value);
-  return data?.mode === 'idc' && data.read_only === true ? data : undefined;
 }
 function setInspection(item: Inspection, usage: number | null, detail: string, evidence: string[]) {
   item.usage = usage;
@@ -262,7 +222,7 @@ function aiMetrics(value: unknown): GpuDevice[] {
   });
 }
 function gpuDiagnostic(evidence: unknown, sampledAt: string): GpuDiagnostic {
-  const result: GpuDiagnostic = { status: 'not_run', outcome: 'unknown', sampledAt: null, source: 'sysak ai', complete: false, gpuCount: null, architectures: [], devices: [], summary: '尚未执行 GPU 诊断；点击诊断时按需调用 SysAK ai', findings: [] };
+  const result: GpuDiagnostic = { status: 'not_run', outcome: 'unknown', sampledAt: null, source: 'sysak ai', complete: false, gpuCount: null, architectures: [], devices: [], summary: '尚未取得 GPU 作业诊断证据；当前 sysAK 未提供 ai 报告，GPU 资源快照不代表硬件健康结论', findings: [] };
   if (!obj(evidence)) return result;
   const statuses: GpuDiagnostic['status'][] = ['ok', 'partial', 'unavailable', 'error', 'timeout', 'truncated', 'permission_denied'];
   result.status = statuses.includes(evidence.status as GpuDiagnostic['status']) ? evidence.status as GpuDiagnostic['status'] : 'error';
@@ -306,71 +266,124 @@ function gpuDiagnostic(evidence: unknown, sampledAt: string): GpuDiagnostic {
   if (!result.complete && result.status === 'ok') result.status = 'partial';
   return result;
 }
-function runInspections(diagnostics: ObjectValue, inspections: Inspection[], sampledAt: string) {
+function runInspections(raw: ObjectValue, inspections: Inspection[], sampledAt: string, hasGpu: boolean) {
   const rootItem = inspections.find((item) => item.id === 'root')!;
   const fdItem = inspections.find((item) => item.id === 'fd')!;
   const memoryItem = inspections.find((item) => item.id === 'memory')!;
-  const anomaly = diagnosticContent(diagnostics.resource_anomaly);
-  const root = obj(anomaly?.root) ? anomaly.root : undefined;
-  const fd = obj(anomaly?.fd) ? anomaly.fd : undefined;
-  const rootUsage = root && ['ok', 'partial'].includes(String(root.status)) && positive(root.total_bytes) && number(root.used_bytes) && root.used_bytes <= root.total_bytes ? percent(root.used_bytes / root.total_bytes * 100) : null;
-  const rootEvidence = ['sysAK resource_anomaly --idc', `采集时间 ${sampledAt}`, '容量阈值：严格大于 90%'];
+  const logItem = inspections.find((item) => item.id === 'logs')!;
+  const gpuItem = inspections.find((item) => item.id === 'gpu')!;
+  const disk = section(raw, 'disk');
+  const root = entries(disk?.mounts).find((mount) => mount.target === '/' && mount.status !== 'error');
+  const size = root?.size_bytes;
+  const avail = root?.avail_bytes;
+  const rootUsage = usable(disk) && root && positive(size) && number(avail) && avail <= size ? percent((size - avail) / size * 100) : null;
+  const hung = entries(disk?.hung_mounts);
+  const rootEvidence = ['sysAK idc_inspect disk.mounts', `采集时间 ${sampledAt}`, '容量阈值：严格大于 90%'];
   if (root) {
-    if (number(root.total_bytes)) rootEvidence.push(`根文件系统容量 ${root.total_bytes} B；已用 ${number(root.used_bytes) ? root.used_bytes : '不可用'} B`);
-    const scan = obj(root.scan) ? root.scan : undefined;
-    rootEvidence.push(scan?.complete === true ? '目录元数据扫描完整' : `目录元数据扫描部分覆盖：${text(scan?.reason, '时间、深度、条目或权限限制')}；仅为已扫描文件的分配字节下界，不是完整目录大小`);
-    for (const directory of entries(root.directories).slice(0, 10)) if (number(directory.allocated_bytes)) rootEvidence.push(`${text(directory.path, '/')} · 已扫描分配字节 ${directory.allocated_bytes} B`);
+    rootEvidence.push(`根文件系统 ${text(root.source, '未知设备')} · ${text(root.fstype, '未知文件系统')}${root.read_only === true ? ' · 只读挂载' : ''}${root.is_network === true ? ' · 网络文件系统' : ''}`);
+    if (number(size)) rootEvidence.push(`容量 ${size} B；可用 ${number(avail) ? avail : '不可用'} B`);
+    if (number(root.inodes) && number(root.inodes_free)) rootEvidence.push(`inode 空闲 ${root.inodes_free}/${root.inodes}${number(root.inodes_used_pct) ? ` · inode 使用率 ${root.inodes_used_pct}%` : ''}`);
   }
-  setInspection(rootItem, rootUsage, rootUsage === null ? 'resource_anomaly 根目录容量诊断不可用' : `根文件系统使用率 ${rootUsage}%${rootUsage > 90 ? '，超过 90%' : '，未超过 90%'}；目录排行为有界扫描`, rootEvidence);
-  const fdDiagnostic = obj(diagnostics.resource_anomaly) ? diagnostics.resource_anomaly : undefined;
-  const fdEvidence = ['来源 sysAK resource_anomaly --idc', `采集时间 ${text(fdDiagnostic?.sampled_at, sampledAt)}`, 'FD 阈值：严格大于 90%', 'FD 压力快照，不是泄漏趋势检查'];
-  const fdInteger = (value: unknown): value is number => number(value) && Number.isSafeInteger(value);
-  const coverage = obj(fd?.coverage) ? fd.coverage : undefined;
-  const fdReturned = fd && ['ok', 'partial'].includes(String(fd.status));
-  const globalUsage = fdReturned && fdInteger(fd.allocated) && fdInteger(fd.file_max) && fd.file_max > 0 && fd.allocated <= fd.file_max ? fd.allocated / fd.file_max * 100 : null;
-  fdEvidence.push(globalUsage === null ? '全局文件句柄占用不可用：计数或上限缺失、无效' : `全局文件句柄 ${fd!.allocated}/${fd!.file_max}；占用 ${percent(globalUsage)}%`);
-  const seenPids = new Set<number>();
-  const processes = fdReturned ? entries(fd.processes).slice(0, 4096).filter((p) => {
-    if (!fdInteger(p.pid) || p.pid <= 0 || p.pid > 2147483647 || seenPids.has(p.pid) || !fdInteger(p.fd_count) || !fdInteger(p.soft_limit) || p.soft_limit <= 0 || !number(p.usage_pct)) return false;
-    // Counts may exceed a lowered soft limit. Validate even >100% against the
-    // sysAK two-decimal ratio; never trust a supplied percentage alone.
-    if (Math.abs(p.usage_pct - Math.round(p.fd_count / p.soft_limit * 10000) / 100) > 0.000001) return false;
-    seenPids.add(p.pid);
-    return true;
-  }).sort((a, b) => (b.fd_count as number) / (b.soft_limit as number) - (a.fd_count as number) / (a.soft_limit as number)) : [];
-  for (const process of processes.slice(0, 10)) fdEvidence.push(`PID ${process.pid} · ${text(process.name, '进程')} · FD ${process.fd_count}/${process.soft_limit} · ${process.usage_pct}%`);
-  const metricsComplete = globalUsage !== null && Array.isArray(fd?.processes) && processes.length === fd.processes.length;
-  const complete = fd?.status === 'ok' && metricsComplete && coverage?.complete === true && fdInteger(coverage.observed_processes) && coverage.observed_processes === processes.length && coverage.denied_processes === 0 && coverage.truncated === false && (coverage.reason === undefined || coverage.reason === '');
-  fdEvidence.push(`进程 FD 覆盖：observed_processes=${fdInteger(coverage?.observed_processes) ? coverage.observed_processes : '不可用'}；denied_processes=${fdInteger(coverage?.denied_processes) ? coverage.denied_processes : '不可用'}；truncated=${typeof coverage?.truncated === 'boolean' ? coverage.truncated : '不可用'}`);
-  fdEvidence.push(complete ? '可见进程 FD 扫描完整；原因：无' : `进程 FD 部分覆盖；原因：${text(coverage?.reason, '覆盖信息缺失、权限、时间或条目限制')}；${metricsComplete ? '不能推断未观察进程正常' : '全局或进程指标缺失、无效或截断'}；不能判断整体正常`);
-  const notExecuted = !fdDiagnostic || fdDiagnostic.reason === 'component_not_installed';
-  delete fdItem.execution;
-  if (!notExecuted) fdItem.execution = complete ? 'complete' : fdReturned && (fd.status === 'partial' || globalUsage !== null || processes.length > 0) ? 'partial' : 'unavailable';
-  if (notExecuted) fdEvidence.push('工具未执行：诊断缺失或组件未安装');
-  else fdEvidence.push(`诊断返回状态 ${text(fdDiagnostic.status, '未知')}；FD 状态 ${text(fd?.status, '不可用')}${typeof fdDiagnostic.reason === 'string' ? `；原因 ${text(fdDiagnostic.reason, '')}` : ''}`);
-  let fdUsage = globalUsage;
-  if (processes.length) fdUsage = Math.max(fdUsage ?? 0, Math.min(100, (processes[0].fd_count as number) / (processes[0].soft_limit as number) * 100));
-  if (notExecuted || (!complete && fdUsage !== null && fdUsage <= 90)) fdUsage = null;
-  const fdDetail = notExecuted ? 'FD 工具未执行' : fdItem.execution === 'unavailable' ? 'FD 诊断已尝试但不可用' : fdUsage === null ? 'FD 诊断已执行但未完整覆盖，不能判断为正常' : `全局/已观察进程 FD 最高使用率 ${percent(fdUsage)}%${fdUsage > 90 ? '，超过 90%' : '，未超过 90%'}${complete ? '；可见进程扫描完整' : '；部分覆盖，已发现压力异常，不能推断整体正常'}`;
-  setInspection(fdItem, fdUsage, `${fdDetail}；FD 压力快照，不是泄漏趋势检查`, fdEvidence);
-  // Native memgraph is not the proc-only IDC/read-only diagnostic contract.
-  const memoryData = record(diagnostics.memgraph);
-  const memory = memoryData?.mode === 'native' && memoryData.tool === 'memgraph' && memoryData.version === '2.0' && memoryData.unit === 'KiB' && memoryData.status === 'partial' && obj(memoryData.coverage) && memoryData.coverage.native_plugin_coverage_unknown === true ? memoryData : undefined;
-  const graph = obj(memory?.graph) ? memory.graph : undefined;
-  const total = graph?.total;
-  const available = graph?.avaliable;
-  const memoryUsage = positive(total) && number(available) && available <= total ? percent((1 - available / total) * 100) : null;
-  const memoryDiagnostic = obj(diagnostics.memgraph) ? diagnostics.memgraph : undefined;
-  const memoryEvidence = ['sysak memgraph --graph --jsonstdout', `采集时间 ${text(memoryDiagnostic?.sampled_at, sampledAt)}`, '内存压力使用率 = (graph.total - graph.avaliable) / graph.total；原生 total 包含 ReservedMem（如有）；严格大于 90%'];
-  if (graph) for (const key of ['total', 'free', 'used', 'avaliable', 'reserved', 'userUsed', 'kernelUsed', 'shmem']) if (number(graph[key])) memoryEvidence.push(`${key}: ${graph[key]} KiB`);
-  memoryEvidence.push('原生插件覆盖未知：native_plugin_coverage_unknown；有效 graph 或成功退出不代表全部插件诊断完整');
-  if (memoryDiagnostic) memoryEvidence.push(`诊断返回状态 ${text(memoryDiagnostic.status, '未知')}${typeof memoryDiagnostic.reason === 'string' ? `；原因 ${text(memoryDiagnostic.reason, '')}` : ''}`);
+  if (hung.length) rootEvidence.push(`疑似 hang 挂载点：${hung.slice(0, 5).map((mount) => `${text(mount.target, '/')}（${text(mount.fstype, '未知')}）`).join('、')}`);
+  const skipped = disk?.skipped;
+  if (number(skipped) && skipped > 0) rootEvidence.push(`跳过 ${skipped} 个挂载点：时间预算、权限或类型限制`);
+  rootEvidence.push(`disk 段状态 ${text(disk?.status, '缺失')}${reasonOf(disk)}`);
+  delete rootItem.execution;
+  rootItem.execution = !usable(disk) || !root ? 'unavailable' : disk!.status === 'ok' && rootUsage !== null && !hung.length ? 'complete' : 'partial';
+  setInspection(rootItem, rootUsage, rootUsage === null ? `根文件系统容量不可用：${text(disk?.reason, 'disk 段缺失或根挂载点不可读')}；本次未检查` : `根文件系统使用率 ${rootUsage}%${rootUsage > 90 ? '，超过 90%' : '，未超过 90%'}${hung.length ? '；存在疑似 hang 挂载点' : ''}；容量来自 statvfs，不做目录大小扫描`, rootEvidence);
+  const memory = section(raw, 'memory');
+  const memTotal = memory?.total_kb;
+  const memAvailable = memory?.available_kb;
+  const memoryUsage = usable(memory) && positive(memTotal) && number(memAvailable) && memAvailable <= memTotal ? percent((memTotal - memAvailable) / memTotal * 100) : null;
+  const memoryEvidence = ['sysAK idc_inspect memory', `采集时间 ${sampledAt}`, '内存使用率 = (total_kb - available_kb) / total_kb；严格大于 90%'];
+  if (memory) {
+    for (const key of ['total_kb', 'available_kb', 'used_kb', 'free_kb', 'cached_kb', 'buffers_kb', 'slab_kb', 'sunreclaim_kb', 'swap_total_kb', 'swap_free_kb']) if (number(memory[key])) memoryEvidence.push(`${key}: ${memory[key]} KiB`);
+    if (number(memory.committed_kb) && number(memory.commit_limit_kb)) memoryEvidence.push(`commit ${memory.committed_kb}/${memory.commit_limit_kb} KiB${number(memory.commit_pct) ? ` · ${memory.commit_pct}%` : ''}`);
+    if (number(memory.oom_kill)) memoryEvidence.push(`累计 oom_kill ${memory.oom_kill} 次`);
+  }
+  const psi = section(raw, 'psi');
+  const memoryPsi = obj(psi?.memory) ? psi?.memory as ObjectValue : undefined;
+  if (memoryPsi?.available === true) {
+    const some = memoryPsi.some_avg10;
+    const full = memoryPsi.full_avg10;
+    memoryEvidence.push(`PSI 内存 some_avg10=${number(some) ? some : '不可用'}；full_avg10=${number(full) ? full : '不可用'}`);
+    if (number(some) && some > 10) memoryEvidence.push(`内存压力 some_avg10 ${some}% 超过 10%，存在回收停顿`);
+  } else memoryEvidence.push('PSI 内存压力不可用：平台未暴露或读取受限');
+  memoryEvidence.push(`memory 段状态 ${text(memory?.status, '缺失')}${reasonOf(memory)}`);
   delete memoryItem.execution;
-  if (memoryDiagnostic && memoryDiagnostic.reason !== 'component_not_installed') memoryItem.execution = memoryUsage === null ? 'unavailable' : 'partial';
-  setInspection(memoryItem, memoryUsage, memoryUsage === null ? 'memgraph 原生内存诊断不可用' : `系统内存压力使用率 ${memoryUsage}%${memoryUsage > 90 ? '，超过 90%' : '，未超过 90%'}；仅判断 graph 内存压力，原生插件覆盖未知，不能推断完整内存诊断正常`, memoryEvidence);
+  if (memory) memoryItem.execution = memory.status === 'ok' && memoryUsage !== null ? 'complete' : memoryUsage !== null ? 'partial' : 'unavailable';
+  setInspection(memoryItem, memoryUsage, memoryUsage === null ? `内存指标不可用：${text(memory?.reason, 'memory 段缺失或不可读')}；本次未检查` : `系统内存使用率 ${memoryUsage}%${memoryUsage > 90 ? '，超过 90%' : '，未超过 90%'}；不将缓存全部视作不可回收内存`, memoryEvidence);
+  const fd = section(raw, 'fd');
+  const fdInteger = (value: unknown): value is number => number(value) && Number.isSafeInteger(value);
+  const allocated = fd?.allocated;
+  const fdMax = fd?.max;
+  const globalUsage = usable(fd) && fdInteger(allocated) && fdInteger(fdMax) && fdMax > 0 && allocated <= fdMax ? allocated / fdMax * 100 : null;
+  const fdEvidence = ['sysAK idc_inspect fd', `采集时间 ${sampledAt}`, 'FD 阈值：严格大于 90%', 'FD 压力快照，不是泄漏趋势检查'];
+  fdEvidence.push(globalUsage === null ? '全局文件句柄占用不可用：计数或上限缺失、无效' : `全局文件句柄 ${allocated}/${fdMax}；占用 ${percent(globalUsage)}%`);
+  if (fdInteger(fd?.nr_open)) fdEvidence.push(`单进程上限 nr_open ${fd!.nr_open}`);
+  const seenPids = new Set<number>();
+  const topProcs = entries(fd?.top_procs);
+  const processes = usable(fd) ? topProcs.slice(0, 4096).filter((process) => {
+    if (!fdInteger(process.pid) || process.pid <= 1 || process.pid > 2147483647 || seenPids.has(process.pid) || !fdInteger(process.fd_count) || !fdInteger(process.fd_limit) || process.fd_limit <= 0 || !number(process.usage_pct)) return false;
+    // Counts may exceed a lowered limit. Validate even >100% against the sysAK
+    // two-decimal ratio; never trust a supplied percentage alone.
+    if (Math.abs(process.usage_pct - Math.round(process.fd_count / process.fd_limit * 10000) / 100) > 0.000001) return false;
+    seenPids.add(process.pid);
+    return true;
+  }).sort((a, b) => (b.fd_count as number) / (b.fd_limit as number) - (a.fd_count as number) / (a.fd_limit as number)) : [];
+  for (const process of processes.slice(0, 10)) fdEvidence.push(`PID ${process.pid} · ${text(process.comm, '进程')} · FD ${process.fd_count}/${process.fd_limit} · ${process.usage_pct}%`);
+  const denied = fd?.denied;
+  const metricsComplete = globalUsage !== null && processes.length === topProcs.length;
+  const complete = fd?.status === 'ok' && metricsComplete && fd!.scanned === true && denied === 0 && fd!.truncated !== true;
+  fdEvidence.push(`进程 FD 覆盖：scanned=${typeof fd?.scanned === 'boolean' ? fd.scanned : '不可用'}；denied=${fdInteger(denied) ? denied : '不可用'}；truncated=${typeof fd?.truncated === 'boolean' ? fd.truncated : '不可用'}`);
+  fdEvidence.push(complete ? '可见进程 FD 扫描完整；原因：无' : `进程 FD 部分覆盖${reasonOf(fd)}；不能推断未观察进程正常`);
+  fdEvidence.push(`fd 段状态 ${text(fd?.status, '缺失')}`);
+  delete fdItem.execution;
+  if (fd) fdItem.execution = complete ? 'complete' : globalUsage !== null || processes.length > 0 ? 'partial' : 'unavailable';
+  let fdUsage = globalUsage;
+  if (processes.length) fdUsage = Math.max(fdUsage ?? 0, Math.min(100, (processes[0].fd_count as number) / (processes[0].fd_limit as number) * 100));
+  if (!usable(fd) || (!complete && fdUsage !== null && fdUsage <= 90)) fdUsage = null;
+  const fdDetail = !fd ? 'FD 段缺失' : fdItem.execution === 'unavailable' ? 'FD 采集已尝试但不可用' : fdUsage === null ? 'FD 采集已执行但未完整覆盖，不能判断为正常' : `全局/已观察进程 FD 最高使用率 ${percent(fdUsage)}%${fdUsage > 90 ? '，超过 90%' : '，未超过 90%'}${complete ? '；可见进程扫描完整' : '；部分覆盖，已发现压力异常，不能推断整体正常'}`;
+  setInspection(fdItem, fdUsage, `${fdDetail}；FD 压力快照，不是泄漏趋势检查`, fdEvidence);
+  const log = section(raw, 'log');
+  delete logItem.execution;
+  if (!usable(log)) {
+    logItem.execution = 'unavailable';
+    setInspection(logItem, null, `内核日志不可读：${text(log?.reason, 'log 段缺失')}；未见异常不代表正常`, ['sysAK idc_inspect log', `采集时间 ${sampledAt}`, `log 段状态 ${text(log?.status, '缺失')}`]);
+  } else {
+    const categories = obj(log!.categories) ? log!.categories as ObjectValue : {};
+    const hits = Object.entries(categories).map(([name, value]) => ({ name, count: obj(value) && number(value.count) ? value.count : 0 })).filter((hit) => hit.count > 0);
+    const critical = hits.filter((hit) => CRITICAL_LOG_CATEGORIES.includes(hit.name));
+    const records = log!.nr_records;
+    const window = log!.window_sec;
+    const logEvidence = ['sysAK idc_inspect log', `采集时间 ${sampledAt}`, `来源 ${text(log!.source, 'dmesg')} · 窗口 ${number(window) ? window : '未知'} 秒 · 记录 ${number(records) ? records : '未知'} 条`, `时间戳可解析：${log!.timestamped === true ? '是' : '否，窗口按读取范围近似'}`];
+    for (const hit of hits.slice(0, 12)) logEvidence.push(`${hit.name}：${hit.count} 条`);
+    for (const task of entries(log!.hung_tasks).slice(0, 5)) logEvidence.push(`hung task：${text(task.comm, '进程')} PID ${number(task.pid) ? task.pid : '未知'} · 阻塞 ${number(task.blocked_sec) ? task.blocked_sec : '未知'} 秒`);
+    logItem.execution = log!.status === 'ok' && log!.timestamped === true ? 'complete' : 'partial';
+    setInspection(logItem, null, critical.length ? `内核日志命中 ${critical.map((hit) => `${hit.name}×${hit.count}`).join('、')}` : `内核日志近 ${number(window) ? window : '未知'} 秒共 ${number(records) ? records : '未知'} 条记录，未见关键异常${log!.status === 'ok' ? '' : '；采样部分覆盖，不能推断其余正常'}`, logEvidence);
+    logItem.status = critical.length ? 'abnormal' : log!.status === 'ok' ? 'normal' : 'unchecked';
+  }
+  const gpu = section(raw, 'gpu');
+  const devices = entries(gpu?.devices);
+  const lost = gpu?.lost_card_num;
+  const xidValue = gpu?.xid_count;
+  // -1 表示 Xid 日志不可读，不能当作 0 命中。
+  const xid = typeof xidValue === 'number' && Number.isFinite(xidValue) ? xidValue : null;
+  const ecc = devices.reduce((sum, device) => sum + (number(device.ecc_uncorr) ? device.ecc_uncorr : 0), 0);
+  const gpuEvidence = ['sysAK idc_inspect gpu', `采集时间 ${sampledAt}`, `可见 ${devices.length} 卡 · 掉卡 ${number(lost) ? lost : '未知'} · Xid ${xid === null || xid < 0 ? '日志不可读' : xid} · 不可纠正 ECC ${ecc}`, '基础硬件快照，不含作业级 AI / NCCL / HANG 证据'];
+  delete gpuItem.execution;
+  if (!hasGpu || !usable(gpu)) {
+    gpuItem.execution = 'unavailable';
+    setInspection(gpuItem, null, !hasGpu ? '未检测到可用 NVIDIA GPU，本次未做 GPU 硬件检查' : `GPU 快照不可用：${text(gpu?.reason, 'gpu 段缺失')}；不代表没有 GPU，也不能判断硬件正常`, gpuEvidence);
+  } else {
+    const abnormal = number(lost) && lost > 0 || xid !== null && xid > 0 || ecc > 0;
+    const conclusive = xid !== null && xid >= 0 && gpu!.status === 'ok';
+    gpuItem.execution = conclusive ? 'complete' : 'partial';
+    setInspection(gpuItem, null, abnormal ? `掉卡 ${number(lost) ? lost : 0} · Xid ${xid !== null && xid > 0 ? xid : 0} · 不可纠正 ECC ${ecc}` : conclusive ? '基础硬件检查未见异常；不代表作业与驱动栈整体正常' : 'GPU 快照部分覆盖或 Xid 日志不可读，不能判断整体正常', gpuEvidence);
+    gpuItem.status = abnormal ? 'abnormal' : conclusive ? 'normal' : 'unchecked';
+  }
 }
 export function parseCollectedState(raw: ObjectValue, previous: HealthState | undefined, inspect: boolean, reset: boolean): HealthState {
-  const resources = obj(raw.resources) ? raw.resources : {};
   const diagnostics = obj(raw.diagnostics) ? raw.diagnostics : {};
   const sampledAt = String((raw.collection as ObjectValue).finished_at);
   const resource = (id: ResourceId): ResourceSnapshot => ({
@@ -378,35 +391,42 @@ export function parseCollectedState(raw: ObjectValue, previous: HealthState | un
     rankLabel: id === 'disk' ? '进程读写吞吐排行' : id === 'energy' ? 'CPU package 功率' : id === 'gpu' ? 'GPU 设备利用率' : id === 'memory' ? '进程常驻内存排行' : '进程 CPU 利用率排行', rankUnit: id === 'disk' ? 'B/s' : id === 'energy' ? 'W' : '%',
   });
   const output: HealthState['resources'] = { cpu: resource('cpu'), energy: resource('energy'), memory: resource('memory'), disk: resource('disk'), gpu: resource('gpu') };
-  const cpu = Array.isArray(resources.cpu) ? resources.cpu : [];
-  if (cpu.length === 2) {
-    const before = cpuCounters(cpu[0]);
-    const after = cpuCounters(cpu[1]);
-    if (before && after && before.length === after.length) {
-      const delta = after.map((value, index) => value - before[index]);
-      const total = delta.reduce((sum, value) => sum + value, 0);
-      if (delta.every(number) && positive(total)) measured(output.cpu, percent((total - delta[3] - (delta[4] ?? 0)) / total * 100), cpu[0], '/proc/stat 双样本差分；idle 与 iowait 不计忙碌；guest 已包含在 user/nice 中');
-    }
+  const cpu = section(raw, 'cpu');
+  const cpuTotal = obj(cpu?.total) ? cpu?.total as ObjectValue : undefined;
+  const cpuUsage = cpuTotal?.usage_pct;
+  if (usable(cpu) && number(cpuUsage) && cpuUsage <= 100) {
+    const load = obj(cpu?.load) ? cpu?.load as ObjectValue : undefined;
+    const load1m = load?.['1m'];
+    const cores = cpu?.cpu_count;
+    const iowait = cpuTotal?.iowait_pct;
+    measured(output.cpu, percent(cpuUsage), cpu, `idc_inspect /proc/stat 窗口差分；idle 与 iowait 不计忙碌${number(cores) ? ` · ${cores} 核` : ''}${number(load1m) ? ` · 1 分钟负载 ${load1m}` : ''}${number(iowait) ? ` · iowait ${iowait}%` : ''}`);
   }
-  const memory = meminfo(resources.meminfo);
-  if (positive(memory.MemTotal) && number(memory.MemAvailable) && memory.MemAvailable <= memory.MemTotal) {
-    const used = memory.MemTotal - memory.MemAvailable;
-    output.memory.quantity = { value: used, unit: 'B', total: memory.MemTotal, available: memory.MemAvailable };
-    measured(output.memory, percent(used / memory.MemTotal * 100), resources.meminfo, '/proc/meminfo；已用 = MemTotal - MemAvailable，不将缓存全部视作不可回收内存');
-  }
-  const disk = record(resources.root_filesystem);
-  if (disk && positive(disk.f_frsize) && positive(disk.f_blocks) && number(disk.f_bfree) && number(disk.f_bavail) && disk.f_bfree <= disk.f_blocks && disk.f_bavail <= disk.f_bfree) {
-    const total = disk.f_blocks * disk.f_frsize;
-    const used = (disk.f_blocks - disk.f_bfree) * disk.f_frsize;
-    const available = disk.f_bavail * disk.f_frsize;
+  const memory = section(raw, 'memory');
+  const memoryTotal = memory?.total_kb;
+  const memoryAvailable = memory?.available_kb;
+  if (usable(memory) && positive(memoryTotal) && number(memoryAvailable) && memoryAvailable <= memoryTotal) {
+    const total = memoryTotal * 1024;
+    const available = memoryAvailable * 1024;
+    const used = total - available;
     if ([total, used, available].every((value) => number(value) && Number.isSafeInteger(value))) {
-      output.disk.quantity = { value: used, unit: 'B', total, available };
-      measured(output.disk, percent(used / total * 100), resources.root_filesystem, '根文件系统 / 的 statvfs 容量；进程 I/O 排行不是磁盘空间归属');
+      output.memory.quantity = { value: used, unit: 'B', total, available };
+      measured(output.memory, percent(used / total * 100), memory, 'idc_inspect /proc/meminfo；已用 = MemTotal - MemAvailable，不将缓存全部视作不可回收内存');
     }
   }
-  let hasGpu = gpuResource(resources.gpu, output.gpu);
-  energyResource(resources.energy_uj, output.energy);
-  processRows(resources, output, memory.MemTotal);
+  const disk = section(raw, 'disk');
+  const rootMount = entries(disk?.mounts).find((mount) => mount.target === '/' && mount.status !== 'error');
+  const diskSize = rootMount?.size_bytes;
+  const diskAvail = rootMount?.avail_bytes;
+  if (usable(disk) && rootMount && positive(diskSize) && number(diskAvail) && diskAvail <= diskSize) {
+    const used = diskSize - diskAvail;
+    if ([diskSize, used, diskAvail].every((value) => number(value) && Number.isSafeInteger(value))) {
+      output.disk.quantity = { value: used, unit: 'B', total: diskSize, available: diskAvail };
+      measured(output.disk, percent(used / diskSize * 100), disk, `根文件系统 / 的 statvfs 容量 · ${text(rootMount.source, '未知设备')} · ${text(rootMount.fstype, '未知文件系统')}；进程 I/O 排行不是磁盘空间归属`);
+    }
+  }
+  let hasGpu = gpuResource(raw, output.gpu);
+  energyResource(raw, output.energy);
+  processRows(raw, output, positive(memoryTotal) ? memoryTotal * 1024 : undefined);
   const inspections = !reset && previous?.mode === 'collected' ? structuredClone(previous.inspections) : [
     inspection('root', '根目录诊断', true, 1), inspection('memory', '内存诊断', true, 1), inspection('fd', 'FD 诊断', true, 1),
     inspection('agents', 'Agent 状态', false, 1), inspection('logs', '日志诊断', false, 1), inspection('gpu', 'GPU 诊断', false, 1),
@@ -414,6 +434,7 @@ export function parseCollectedState(raw: ObjectValue, previous: HealthState | un
   ];
   const gpuReport = inspect ? gpuDiagnostic(diagnostics.ai, sampledAt) : !reset && previous?.mode === 'collected' && previous.gpuDiagnostic ? structuredClone(previous.gpuDiagnostic) : gpuDiagnostic(undefined, sampledAt);
   if (inspect) {
+    runInspections(raw, inspections, sampledAt, hasGpu);
     const aiEvidence = obj(diagnostics.ai) && obj(diagnostics.ai.content) ? diagnostics.ai.content : undefined;
     const metrics = aiEvidence?.schema_version === '1.0' && aiEvidence.tool === 'ai' && aiEvidence.mode === 'native' && aiEvidence.read_only === false && ['ok', 'partial', 'error', 'timeout', 'unavailable'].includes(String(aiEvidence.status)) ? aiMetrics(aiEvidence.gpu_metrics) : [];
     if (gpuReport.jobAnalysis) {
@@ -454,18 +475,19 @@ export function parseCollectedState(raw: ObjectValue, previous: HealthState | un
       gpuReport.outcome = 'unknown';
       gpuReport.summary = 'GPU 资源快照与 ai 设备枚举不一致，不能判断 GPU 不存在或硬件正常';
     }
-    runInspections(diagnostics, inspections, sampledAt);
-    const gpuInspection = inspections.find(item => item.id === 'gpu')!;
-    gpuInspection.status = gpuReport.outcome === 'normal' ? 'normal' : gpuReport.outcome === 'abnormal' ? 'abnormal' : 'unchecked';
-    gpuInspection.usage = null;
-    gpuInspection.detail = gpuReport.summary;
-    gpuInspection.evidence = [gpuReport.source, `采集时间 ${gpuReport.sampledAt ?? '未执行'}`, gpuReport.complete ? '本次检查覆盖完整' : '检查未执行、未完成或覆盖受限', ...gpuReport.findings.slice(0, 10).map(item => `${item.severity} · ${item.check} · ${item.message}`)];
-    delete gpuInspection.execution;
-    if (gpuReport.status !== 'not_run') gpuInspection.execution = gpuReport.complete ? 'complete' : gpuReport.findings.length ? 'partial' : 'unavailable';
-    if (gpuReport.outcome === 'no_gpu' && !output.gpu.gpuDevices?.length && !output.gpu.rows.length) hasGpu = false;
+    if (gpuReport.status !== 'not_run') {
+      const gpuInspection = inspections.find(item => item.id === 'gpu')!;
+      gpuInspection.status = gpuReport.outcome === 'normal' ? 'normal' : gpuReport.outcome === 'abnormal' ? 'abnormal' : 'unchecked';
+      gpuInspection.usage = null;
+      gpuInspection.detail = gpuReport.summary;
+      gpuInspection.evidence = [gpuReport.source, `采集时间 ${gpuReport.sampledAt ?? '未执行'}`, gpuReport.complete ? '本次检查覆盖完整' : '检查未执行、未完成或覆盖受限', ...gpuReport.findings.slice(0, 10).map(item => `${item.severity} · ${item.check} · ${item.message}`)];
+      delete gpuInspection.execution;
+      gpuInspection.execution = gpuReport.complete ? 'complete' : gpuReport.findings.length ? 'partial' : 'unavailable';
+      if (gpuReport.outcome === 'no_gpu' && !output.gpu.gpuDevices?.length && !output.gpu.rows.length) hasGpu = false;
+    }
   }
   const revision = previous ? previous.revision + 1 : inspect ? 2 : 1;
   const operations = reset ? [] : structuredClone(previous?.operations ?? []);
-  if (inspect) operations.unshift({ id: `inspect-${revision}`, kind: 'inspect', names: ['根目录 / FD：resource_anomaly；内存：memgraph；GPU：ai'], time: sampledAt, revision });
+  if (inspect) operations.unshift({ id: `inspect-${revision}`, kind: 'inspect', names: ['sysAK idc_inspect 1.1：disk.mounts / memory / fd / log / gpu'], time: sampledAt, revision });
   return { mode: 'collected', hasGpu, revision, sampledAt, resources: output, inspections, gpuDiagnostic: gpuReport, optimizations: [], operations: operations.slice(0, 30) };
 }

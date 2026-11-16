@@ -6,16 +6,14 @@ const path = require('node:path');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { createHash, randomUUID } = require('node:crypto');
-const { CollectorError, collectRaw, createIdcController, verifyBundle, validState } = require('../electron/idc-controller.cjs');
+const { randomUUID } = require('node:crypto');
+const { CollectorError, collectRaw, collectionJson, createIdcController, resolveSysak, validState } = require('../electron/idc-controller.cjs');
+const { rawSnapshot, sysakInstall, PID, STARTTIME } = require('./fixtures.cjs');
 
 const MiB = 1024 * 1024;
 const timestamp = '2026-11-01T12:34:56.000Z';
 const linux = { skip: process.platform !== 'linux', timeout: 5000 };
 const turn = () => new Promise((resolve) => setImmediate(resolve));
-// Only these legacy launch-injection tests bypass service verification; children remain inert.
-const launchImpl = (binary, args, opts, spawnImpl) => spawnImpl(binary, args, opts);
-const verifyExecutionImpl = () => {};
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -77,25 +75,6 @@ async function autoFinished(controller, clock, operation = 'inspect') {
   await waitFor(() => controller.status().phase === 'idle' &&
     controller.status().last_task?.operation === operation && clock.pending.length === 1,
   'automatic work must finish and arm its next timer');
-}
-function rawSnapshot(profile, requestId) {
-  return {
-    schema_version: '1.0', request_id: requestId, collected_at: timestamp,
-    collector: { name: 'sysak', version: '1.0', permissions: { status: 'granted', elevated: false, denied: [] } },
-    collection: { profile, status: 'ok', started_at: timestamp, finished_at: timestamp },
-    capabilities: { read_only: true },
-    device: { hostname: 'fixture-only' },
-    resources: {
-      cpu: [
-        { status: 'ok', source: '/proc/stat', content: 'cpu 100 0 0 900 0 0 0 0 0 0\n', sampled_at: timestamp },
-        { status: 'ok', source: '/proc/stat', content: 'cpu 112 0 0 988 0 0 0 0 0 0\n', sampled_at: timestamp },
-      ],
-      gpu: { status: 'ok', source: { argv: ['nvidia-smi', '--format=csv,noheader,nounits'] },
-        content: { schema_version: '1.0', tool: 'idc', mode: 'idc', read_only: true, status: 'ok', available: true, gpu_count: 0, devices: [] }, sampled_at: timestamp },
-      meminfo: { status: 'ok', source: '/proc/meminfo', content: 'MemTotal: 1000 kB\nMemAvailable: 880 kB\n', sampled_at: timestamp },
-    },
-    configuration: {}, diagnostics: {},
-  };
 }
 function healthState(revision = 1, hasGpu = false) {
   return {
@@ -209,7 +188,7 @@ test('validState validates parsed GPU device metrics and diagnostic reports at t
 function responseFor(body, state = healthState()) {
   const taskId = randomUUID();
   return {
-    schema_version: '1.0', request_id: body.request_id, task_id: taskId,
+    schema_version: '1.1', request_id: body.request_id, task_id: taskId,
     mode: 'mock', read_only: true, state,
     task: { id: taskId, operation: body.operation, status: 'completed', simulated: false, read_only: true },
   };
@@ -246,8 +225,12 @@ function fakeProcesses(onSpawn = (call) => call.succeed()) {
     child.kill = (signal) => { kills.push({ pid: child.pid, signal, fallback: true }); child.finish(null); return true; };
     const call = {
       binary, argv, options, child,
-      profile: argv[2], requestId: argv[4],
-      succeed(raw = rawSnapshot(argv[2], argv[4]), stderr = '') {
+      index: calls.length,
+      // idc_inspect argv no longer carries a profile, so call order is the only way these
+      // fixtures can tell the snapshot-initializing collection from the later inspections.
+      role: calls.length === 0 ? 'initial' : 'inspection',
+      command: argv[0], requestId: argv[2],
+      succeed(raw = rawSnapshot(argv[2]), stderr = '') {
         if (stderr) child.stderr.write(stderr);
         child.stdout.write(JSON.stringify(raw));
         child.finish();
@@ -265,24 +248,9 @@ function fakeProcesses(onSpawn = (call) => call.succeed()) {
     call.child.finish(null);
   };
   return {
-    calls, kills, spawnImpl, launchImpl, verifyExecutionImpl, killGroup,
+    calls, kills, spawnImpl, killGroup,
     nextSpawn: () => new Promise((resolve) => started.once('spawn', resolve)),
   };
-}
-function bundle(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sysom-idc-controller-test-'));
-  // Executable permission is needed by verifyBundle, but this is deliberately not a program.
-  fs.writeFileSync(path.join(root, 'sysak'), 'fixture only; must never be executed\n', { mode: 0o700 });
-  fs.writeFileSync(path.join(root, 'collector.py'), '# inert hash fixture\n');
-  const manifest = {
-    schema_version: '1.0', platform: 'linux', arch: process.arch, commands: ['idc', 'resource_anomaly', 'memgraph'],
-    files: Object.fromEntries(['sysak', 'collector.py'].map((name) => [name,
-      createHash('sha256').update(fs.readFileSync(path.join(root, name))).digest('hex')])),
-  };
-  const writeManifest = () => fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest));
-  writeManifest();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  return { root, manifest, writeManifest };
 }
 async function loopback(t, handler) {
   const requests = [];
@@ -327,61 +295,50 @@ async function loopback(t, handler) {
   t.after(async () => { await close(); assert.deepEqual(failures, [], 'loopback stub must not mask fixture failures'); });
   return { startMockOpenApi, requests, close, get token() { return token; }, get closed() { return closed; } };
 }
-async function controllerFixture(t, { onSpawn, handler, mutateBundle, ...options } = {}) {
-  const files = bundle(t);
-  if (mutateBundle) mutateBundle(files);
+async function controllerFixture(t, { onSpawn, handler, mutateInstall, processActionImpl, ...options } = {}) {
+  const files = sysakInstall(t);
+  if (mutateInstall) mutateInstall(files);
   const processes = fakeProcesses(onSpawn);
   const api = await loopback(t, handler);
   const clock = fakeClock();
+  // Rows in these fixtures carry no starttime, so identity verification never selects a
+  // target; the stub keeps any accidental selection from spawning the inert fixture binary.
+  const processActions = [];
   const controller = await createIdcController({
-    bundleRoot: files.root, deviceId: randomUUID(), hasGpu: false,
-    startMockOpenApi: api.startMockOpenApi, ...processes, scheduler: clock.scheduler, ...options,
+    sysakBinary: files.binary, bundleRoot: files.root, deviceId: randomUUID(), hasGpu: false, sysomConfig: null,
+    startMockOpenApi: api.startMockOpenApi, ...processes, scheduler: clock.scheduler,
+    processActionImpl: processActionImpl || (async (action, targets) => {
+      processActions.push({ action, targets });
+      return targets.map(() => ({ status: 'ineligible', eligible: false, reason: 'fixture: 身份无法核验' }));
+    }),
+    ...options,
   });
   t.after(() => controller.close());
-  return { controller, processes, api, files, clock };
+  return { controller, processes, api, files, clock, processActions };
 }
-function rawFixture(t, onSpawn, timeoutMs = 1000) {
+function rawFixture(t, onSpawn, timeoutMs = 1000, extra = {}) {
   const processes = fakeProcesses(onSpawn);
   const abort = new AbortController();
   t.after(() => abort.abort());
   const requestId = randomUUID();
-  const run = () => collectRaw(path.join(os.tmpdir(), 'never-run-sysak'), 'resources', requestId, abort.signal,
-    { ...processes, timeoutMs });
+  const run = () => collectRaw(path.join(os.tmpdir(), 'never-run-sysak'), requestId, abort.signal,
+    { ...processes, timeoutMs, ...extra });
   return { ...processes, abort, requestId, run };
 }
 
-// EPERM tests never inspect a real bundle, start HTTP, or signal an OS process.
+// EPERM tests never inspect a real installation, start HTTP, or signal an OS process.
 function watchdogProcesses(t) {
   const processes = fakeProcesses(() => {});
   processes.killGroup = (pid, signal) => {
     assert(processes.calls.some(call => call.child.pid === pid), 'must target a mock child');
     processes.kills.push({ pid, signal });
-    throw Object.assign(new Error('mock root group permission denied'), { code: 'EPERM' });
+    throw Object.assign(new Error('mock process group permission denied'), { code: 'EPERM' });
   };
   t.after(() => { for (const call of processes.calls) call.child.finish(null); });
   return processes;
 }
 async function mockWatchdogController(t, processes) {
-  const root = '/fixture/idc-controller';
-  const bytes = Buffer.from('inert in-memory sysak');
-  const manifest = { schema_version: '1.0', platform: 'linux', arch: process.arch,
-    commands: ['idc'], files: { sysak: createHash('sha256').update(bytes).digest('hex') } };
-  t.mock.method(fs, 'readFileSync', (file, encoding) => {
-    if (file === path.join(root, 'manifest.json')) {
-      assert.equal(encoding, 'utf8');
-      return JSON.stringify(manifest);
-    }
-    assert.equal(file, path.join(root, 'sysak'), 'must read only the in-memory fixture');
-    return bytes;
-  });
-  t.mock.method(fs, 'realpathSync', file => {
-    assert([root, path.join(root, 'sysak')].includes(file), 'must resolve only the in-memory fixture');
-    return file;
-  });
-  t.mock.method(fs, 'accessSync', (file, mode) => {
-    assert.equal(file, path.join(root, 'sysak'));
-    assert.equal(mode, fs.constants.X_OK);
-  });
+  const files = sysakInstall(t);
   const requests = [];
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(url, 'http://fixture.invalid/openapi/v1/collections');
@@ -391,7 +348,8 @@ async function mockWatchdogController(t, processes) {
   });
   let apiClosed = false;
   const controller = await createIdcController({
-    bundleRoot: root, ...processes, scheduler: fakeClock().scheduler,
+    sysakBinary: files.binary, bundleRoot: files.root, sysomConfig: null, ...processes, scheduler: fakeClock().scheduler,
+    processActionImpl: async () => assert.fail('the watchdog fixture must never select a process target'),
     startMockOpenApi: async () => ({ baseUrl: 'http://fixture.invalid', close: async () => { apiClosed = true; } }),
   });
   t.after(async () => {
@@ -413,7 +371,7 @@ test('collector uses fixed argv, shell:false, detached pipes and a credential-fr
     const result = await fixture.run();
     const call = fixture.calls[0];
     assert.equal(call.binary, path.join(os.tmpdir(), 'never-run-sysak'));
-    assert.deepEqual(call.argv, ['idc', '--profile', 'resources', '--request-id', fixture.requestId, '-o', '-']);
+    assert.deepEqual(call.argv, ['idc_inspect', '--request-id', fixture.requestId, '-o', '-']);
     assert.deepEqual(call.options, {
       cwd: os.tmpdir(), detached: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' },
@@ -434,18 +392,23 @@ test('malformed JSON and incompatible raw collection fields fail closed', { time
   const cases = [
     ['truncated JSON', () => '{'], ['null', () => 'null'], ['array', () => '[]'],
     ['schema', (raw) => { raw.schema_version = '2.0'; }],
+    ['legacy schema', (raw) => { raw.schema_version = '1.0'; }],
     ['request identity', (raw) => { raw.request_id = randomUUID(); }],
-    ['collector', (raw) => { raw.collector.name = 'shell'; }],
-    ['profile', (raw) => { raw.collection.profile = 'inspection'; }],
-    ['collection status', (raw) => { raw.collection.status = 'error'; }],
-    ['resources', (raw) => { delete raw.resources; }],
-    ['configuration', (raw) => { raw.configuration = null; }],
-    ['diagnostics', (raw) => { delete raw.diagnostics; }],
+    ['collector name', (raw) => { raw.collector.name = 'shell'; }],
+    ['collector command', (raw) => { raw.collector.command = 'idc'; }],
+    ['profile', (raw) => { raw.collection.profile = 'resources'; }],
+    ['collection status error', (raw) => { raw.collection.status = 'error'; }],
+    ['collection status failed', (raw) => { raw.collection.status = 'failed'; }],
+    ['finished_at', (raw) => { delete raw.collection.finished_at; }],
+    ['host', (raw) => { raw.host = null; }],
+    ['device', (raw) => { delete raw.device; }],
+    ['core section', (raw) => { delete raw.sections.cpu; }],
+    ['array section', (raw) => { raw.sections.memory = []; }],
     ['read-only capability', (raw) => { raw.capabilities.read_only = false; }],
   ];
   for (const [name, mutate] of cases) await t.test(name, async (t) => {
     const fixture = rawFixture(t, (call) => {
-      const raw = rawSnapshot(call.profile, call.requestId);
+      const raw = rawSnapshot(call.requestId);
       const text = mutate(raw);
       call.child.stdout.write(text ?? JSON.stringify(raw));
       call.child.finish();
@@ -455,11 +418,18 @@ test('malformed JSON and incompatible raw collection fields fail closed', { time
   });
   await t.test('partial read-only results are accepted', async (t) => {
     const fixture = rawFixture(t, (call) => {
-      const raw = rawSnapshot(call.profile, call.requestId);
+      const raw = rawSnapshot(call.requestId);
       raw.collection.status = 'partial';
       call.succeed(raw);
     });
     assert.equal((await fixture.run()).raw.collection.status, 'partial');
+  });
+  await t.test('launcher diagnostics around the JSON envelope are skipped', async (t) => {
+    const fixture = rawFixture(t, (call) => {
+      call.child.stdout.write(`sysak: loading modules\n${JSON.stringify(rawSnapshot(call.requestId))}\ntrailing notice\n`);
+      call.child.finish();
+    });
+    assert.equal((await fixture.run()).raw.request_id, fixture.requestId);
   });
 });
 
@@ -487,34 +457,31 @@ test('cancellation closes the fake child; a pre-aborted signal never spawns', { 
   assert.equal(preAborted.calls.length, 0);
 });
 
-test('collectRaw cancellation and timeout EPERM wait for root watchdog close without child.kill fallback or accepting late output', { timeout: 5000 }, async t => {
-  for (const cause of ['cancel', 'timeout']) for (const code of [0, 124]) await t.test(`${cause}: watchdog close ${code}`, async t => {
+test('collectRaw cancellation and timeout escalate the process group on EPERM without child.kill fallback or accepting late output', { timeout: 5000 }, async t => {
+  for (const cause of ['cancel', 'timeout']) for (const code of [0, 124]) await t.test(`${cause}: group close ${code}`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const processes = watchdogProcesses(t);
     const abort = new AbortController();
     const requestId = randomUUID();
     const started = processes.nextSpawn();
-    const pending = collectRaw('/fixture/never-run-sysak', 'resources', requestId, abort.signal, processes);
+    const pending = collectRaw('/fixture/never-run-sysak', requestId, abort.signal, processes);
     let settled = false;
     pending.then(() => { settled = true; }, () => { settled = true; });
     const rejected = assert.rejects(pending, cause === 'cancel' ? errorIs('COLLECTION_CANCELLED') : errorIs('COLLECTION_TIMEOUT', 504, true));
     const call = await started;
     const fallback = t.mock.method(call.child, 'kill', () => assert.fail('EPERM must not fall back to child.kill'));
     if (cause === 'cancel') abort.abort();
-    else t.mock.timers.tick(35000);
+    else t.mock.timers.tick(45000);
     assert.deepEqual(processes.kills, [{ pid: call.child.pid, signal: 'SIGTERM' }]);
-    call.child.emit('error', Object.assign(new Error('mock EPERM after stop'), { code: 'EPERM' }));
     await turn();
-    assert.equal(settled, false, 'EPERM after failure must not settle before close');
+    assert.equal(settled, false, 'a stopped collection must wait for the process group to close');
     t.mock.timers.tick(1000);
     assert.deepEqual(processes.kills, [
       { pid: call.child.pid, signal: 'SIGTERM' }, { pid: call.child.pid, signal: 'SIGKILL' },
     ]);
-    // Repeated error events must keep waiting, not remove the handler after one event.
-    call.child.emit('error', Object.assign(new Error('mock EPERM after escalation'), { code: 'EPERM' }));
-    call.child.stdout.write(JSON.stringify(rawSnapshot('resources', requestId)));
+    call.child.stdout.write(JSON.stringify(rawSnapshot(requestId)));
     await turn();
-    assert.equal(settled, false, 'valid late output must not bypass the root watchdog');
+    assert.equal(settled, false, 'valid late output must not bypass the recorded failure');
     assert.equal(fallback.mock.callCount(), 0);
     call.child.finish(code);
     await rejected;
@@ -526,7 +493,7 @@ test('collectRaw cancellation and timeout EPERM wait for root watchdog close wit
   });
 });
 
-test('controller disable, close and timeout EPERM discard root output without HTTP submission, task metadata or cache', linux, async t => {
+test('controller disable, close and timeout discard late output without HTTP submission, task metadata or cache', linux, async t => {
   for (const cause of ['disable', 'close', 'timeout']) await t.test(cause, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const processes = watchdogProcesses(t);
@@ -538,19 +505,18 @@ test('controller disable, close and timeout EPERM discard root output without HT
     pending.then(() => { settled = true; }, () => { settled = true; });
     const rejected = assert.rejects(pending, cause === 'timeout' ? errorIs('COLLECTION_TIMEOUT', 504, true) : errorIs('COLLECTION_CANCELLED'));
     const call = await started;
-    const fallback = t.mock.method(call.child, 'kill', () => assert.fail('must leave the root watchdog to close the mock child'));
+    const fallback = t.mock.method(call.child, 'kill', () => assert.fail('EPERM must not signal a fake child either'));
     let closing;
     let closeSettled = false;
     if (cause === 'disable') controller.setEnabled(false);
     else if (cause === 'close') {
       closing = controller.close().then(() => { closeSettled = true; });
-    } else t.mock.timers.tick(35000);
+    } else t.mock.timers.tick(45000);
     assert.deepEqual(processes.kills, [{ pid: call.child.pid, signal: 'SIGTERM' }]);
-    call.child.emit('error', Object.assign(new Error('mock root EPERM'), { code: 'EPERM' }));
-    call.child.stdout.write(JSON.stringify(rawSnapshot(call.profile, call.requestId)));
+    call.child.stdout.write(JSON.stringify(rawSnapshot(call.requestId)));
     await turn();
     assert.equal(settled, false);
-    assert.equal(closeSettled, false, 'close must wait for root watchdog close');
+    assert.equal(closeSettled, false, 'close must wait for the process group to exit');
     assert.equal(fixture.apiClosed, false);
     assert.equal(requests.length, 0);
     assert.equal(controller.status().last_task, null);
@@ -558,7 +524,6 @@ test('controller disable, close and timeout EPERM discard root output without HT
     assert.deepEqual(processes.kills, [
       { pid: call.child.pid, signal: 'SIGTERM' }, { pid: call.child.pid, signal: 'SIGKILL' },
     ]);
-    call.child.emit('error', Object.assign(new Error('mock root escalation EPERM'), { code: 'EPERM' }));
     await turn();
     assert.equal(settled, false);
     assert.equal(fallback.mock.callCount(), 0);
@@ -573,7 +538,7 @@ test('controller disable, close and timeout EPERM discard root output without HT
     await assert.rejects(controller.snapshot(false), errorIs('COLLECTOR_DISABLED'));
     assert.equal(processes.calls.length, 1, 'disabled cache read must not start a process');
     t.mock.timers.tick(100000);
-    assert.equal(processes.kills.length, 2, 'watchdog close must cancel local timers');
+    assert.equal(processes.kills.length, 2, 'group close must cancel local timers');
     if (cause !== 'close') {
       controller.setEnabled(true);
       const nextStarted = processes.nextSpawn();
@@ -592,7 +557,7 @@ test('controller disable, close and timeout EPERM discard root output without HT
   });
 });
 
-test('EPERM without an existing collection failure and root watchdog exit codes retain distinct errors', { timeout: 5000 }, async t => {
+test('EPERM without an existing collection failure is a spawn error; every nonzero exit is one retryable failure', { timeout: 5000 }, async t => {
   await t.test('EPERM before stop is a spawn error', async t => {
     const fixture = rawFixture(t, call => {
       call.child.emit('error', Object.assign(new Error('mock spawn EPERM'), { code: 'EPERM' }));
@@ -601,23 +566,11 @@ test('EPERM without an existing collection failure and root watchdog exit codes 
     await assert.rejects(fixture.run(), errorIs('COLLECTOR_UNAVAILABLE'));
     assert.deepEqual(fixture.kills, []);
   });
-  for (const [code, errorCode, status, retryable] of [
-    [126, 'ROOT_COLLECTOR_UNAVAILABLE', 403, false],
-    [127, 'ROOT_COLLECTOR_UNAVAILABLE', 403, false],
-    [124, 'COLLECTION_TIMEOUT', 504, true],
-    [125, 'COLLECTION_TOO_LARGE', 413, false],
-    [75, 'ROOT_SERVICE_BUSY', 503, true],
-  ]) await t.test(`service exit ${code}`, async t => {
+  // The root service no longer runs collection, so its 124/125/126/127/75 exit-code
+  // vocabulary is gone: the current user's sysak exit status is opaque.
+  for (const code of [126, 127, 124, 125, 75, 2, 1, -1]) await t.test(`sysak exit ${code}`, async t => {
     const fixture = rawFixture(t, call => call.child.finish(code));
-    await assert.rejects(fixture.run(), error => {
-      errorIs(errorCode, status, retryable)(error);
-      if (code === 126 || code === 127) {
-        assert.match(error.message, /服务身份或组件校验失败/);
-        assert.match(error.message, /安装与用户授权/);
-        assert.doesNotMatch(error.message, /pkexec|sudo|授权弹窗/);
-      }
-      return true;
-    });
+    await assert.rejects(fixture.run(), errorIs('COLLECTION_FAILED', 503, true));
     assert.deepEqual(fixture.kills, []);
   });
 });
@@ -638,9 +591,8 @@ test('spawn error and nonzero process exit are distinct collection failures', { 
 
 test('raw output cap accepts exactly 8 MiB and kills on the first extra byte', { timeout: 5000 }, async (t) => {
   const exact = rawFixture(t, (call) => {
-    const raw = rawSnapshot(call.profile, call.requestId);
-    raw.diagnostics.padding = '';
-    raw.diagnostics.padding = 'x'.repeat(8 * MiB - Buffer.byteLength(JSON.stringify(raw)));
+    const raw = rawSnapshot(call.requestId);
+    raw.sections.log.detail = 'x'.repeat(8 * MiB - Buffer.byteLength(JSON.stringify(raw)));
     const bytes = Buffer.from(JSON.stringify(raw));
     call.child.stdout.write(bytes.subarray(0, MiB));
     call.child.stdout.write(bytes.subarray(MiB));
@@ -656,9 +608,9 @@ test('raw output cap accepts exactly 8 MiB and kills on the first extra byte', {
   assert.equal(oversized.kills[0].pid, oversized.calls[0].child.pid);
 });
 
-test('missing bundle reports unavailable status without attempting collection', linux, async (t) => {
+test('a missing idc_inspect component reports unavailable status without attempting collection', linux, async (t) => {
   const { controller, processes, api } = await controllerFixture(t, {
-    mutateBundle: ({ root }) => fs.rmSync(path.join(root, 'manifest.json')),
+    mutateInstall: ({ tools }) => fs.rmSync(path.join(tools, 'idc_inspect')),
   });
   const status = controller.status();
   assert.equal(status.installed, false);
@@ -666,40 +618,75 @@ test('missing bundle reports unavailable status without attempting collection', 
   assert.equal(status.mode, 'mock');
   assert.equal(status.read_only, true);
   assert.equal(status.api_version, '1.0');
-  assert.equal(status.error.code, 'COLLECTOR_UNAVAILABLE');
-  await assert.rejects(controller.snapshot(), errorIs('COLLECTOR_UNAVAILABLE'));
+  assert.equal(status.error.code, 'SYSAK_COMPONENT_MISSING');
+  await assert.rejects(controller.snapshot(), errorIs('SYSAK_COMPONENT_MISSING'));
   assert.equal(processes.calls.length, 0);
   assert.equal(api.requests.length, 0);
 });
 
-test('manifest architecture, commands, digests and path containment determine bundle status', linux, async (t) => {
-  await t.test('valid hash manifest', (t) => {
-    const files = bundle(t);
-    assert.deepEqual(verifyBundle(files.root), files.manifest);
+test('resolveSysak requires an executable launcher, the idc_inspect component and a matching rule', linux, async (t) => {
+  await t.test('a complete installation resolves beside-binary components', (t) => {
+    const files = sysakInstall(t);
+    assert.deepEqual(resolveSysak({ sysakBinary: files.binary }),
+      { binary: files.binary, components: files.components, source: 'override' });
+  });
+  await t.test('SYSOM_SYSAK_BIN is an override, not a system discovery', (t) => {
+    const files = sysakInstall(t);
+    const saved = process.env.SYSOM_SYSAK_BIN;
+    process.env.SYSOM_SYSAK_BIN = files.binary;
+    try {
+      assert.equal(resolveSysak().source, 'override');
+      assert.equal(resolveSysak().binary, files.binary);
+    } finally {
+      if (saved === undefined) delete process.env.SYSOM_SYSAK_BIN;
+      else process.env.SYSOM_SYSAK_BIN = saved;
+    }
   });
   const cases = [
-    ['wrong architecture', ({ manifest }) => { manifest.arch = 'not-this-architecture'; }],
-    ['wrong schema', ({ manifest }) => { manifest.schema_version = '2.0'; }],
-    ['missing command', ({ manifest }) => { manifest.commands = ['resource_anomaly', 'memgraph']; }],
-    ['wrong digest', ({ manifest }) => { manifest.files.sysak = '0'.repeat(64); }],
-    ['malformed digest', ({ manifest }) => { manifest.files.sysak = 'not-a-hash'; }],
-    ['modified file', ({ root }) => fs.appendFileSync(path.join(root, 'collector.py'), '# tampered\n')],
-    ['traversal', ({ manifest }) => { manifest.files['../outside'] = '0'.repeat(64); }],
-    ['symlink escape', ({ root, manifest }) => {
-      fs.symlinkSync(path.join(root, '..'), path.join(root, 'escape'));
-      manifest.files.escape = '0'.repeat(64);
-    }],
+    ['missing launcher', ({ binary }) => fs.rmSync(binary), 'SYSAK_NOT_FOUND'],
+    ['non-executable launcher', ({ binary }) => fs.chmodSync(binary, 0o644), 'SYSAK_NOT_FOUND'],
+    ['directory instead of a launcher', ({ binary }) => { fs.rmSync(binary); fs.mkdirSync(binary); }, 'SYSAK_NOT_FOUND'],
+    ['missing component', ({ tools }) => fs.rmSync(path.join(tools, 'idc_inspect')), 'SYSAK_COMPONENT_MISSING'],
+    ['unreadable component', ({ tools }) => fs.chmodSync(path.join(tools, 'idc_inspect'), 0o000), 'SYSAK_COMPONENT_MISSING'],
+    ['missing rules', ({ tools }) => fs.rmSync(path.join(tools, '.sysak.rules')), 'SYSAK_COMPONENT_MISSING'],
+    ['rule for another command', ({ tools }) => fs.writeFileSync(path.join(tools, '.sysak.rules'),
+      'detect/generic:resource_anomaly:python-dep{python3}:help{resource_anomaly}\n'), 'SYSAK_COMPONENT_MISSING'],
+    ['legacy idc rule only', ({ tools }) => fs.writeFileSync(path.join(tools, '.sysak.rules'),
+      'detect/generic:idc:python-dep{python3}:help{idc}\n'), 'SYSAK_COMPONENT_MISSING'],
+    ['component is a directory', ({ tools }) => {
+      fs.rmSync(path.join(tools, 'idc_inspect'));
+      fs.mkdirSync(path.join(tools, 'idc_inspect'));
+    }, 'SYSAK_COMPONENT_MISSING'],
   ];
-  for (const [name, mutate] of cases) await t.test(name, async (t) => {
-    const { controller, processes, api } = await controllerFixture(t, {
-      mutateBundle(files) { mutate(files); files.writeManifest(); },
-    });
+  for (const [name, mutate, code] of cases) await t.test(name, async (t) => {
+    const files = sysakInstall(t);
+    mutate(files);
+    // chmod is not a barrier for root, so only assert the code when the mode actually took effect.
+    if (name === 'unreadable component' && process.getuid?.() === 0) return;
+    assert.throws(() => resolveSysak({ sysakBinary: files.binary }), errorIs(code));
+    const { controller, processes, api } = await controllerFixture(t, { sysakBinary: files.binary });
     assert.equal(controller.status().installed, false);
-    assert.equal(controller.status().error.code, 'INVALID_BUNDLE');
-    await assert.rejects(controller.snapshot(), errorIs('INVALID_BUNDLE'));
+    assert.equal(controller.status().error.code, code);
+    await assert.rejects(controller.snapshot(), errorIs(code));
     assert.equal(processes.calls.length, 0);
     assert.equal(api.requests.length, 0);
   });
+  await t.test('a non-Linux host is rejected before any filesystem probe', async (t) => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    try {
+      assert.throws(() => resolveSysak({ sysakBinary: '/never/probed' }), errorIs('UNSUPPORTED_PLATFORM'));
+    } finally { Object.defineProperty(process, 'platform', platform); }
+  });
+});
+
+test('collectionJson extracts the first balanced object from launcher diagnostics', () => {
+  const envelope = JSON.stringify({ a: { b: 'x}y' }, c: 'escaped \\" quote' });
+  assert.equal(collectionJson(`sysak: loading\n${envelope}\ntrailing`), envelope);
+  assert.equal(collectionJson(envelope), envelope);
+  assert.throws(() => collectionJson('no json here'), /missing json/);
+  assert.throws(() => collectionJson('{ "a": 1'), /unterminated json/);
+  assert.throws(() => collectionJson('{ "a": "unterminated }'), /unterminated json/);
 });
 
 test('loopback collected-state pipeline coalesces, caches cloned state and records a nonsimulated task despite outer mock mode', linux, async (t) => {
@@ -734,8 +721,8 @@ test('loopback collected-state pipeline coalesces, caches cloned state and recor
   assert.equal(status.error, null);
   assert.deepEqual(status.last_task, {
     id: status.last_task.id, request_id: call.requestId, operation: 'snapshot', status: 'completed',
-    profile: 'resources', collection_status: 'ok', raw_bytes: Buffer.byteLength(JSON.stringify(request.body.raw_snapshot)),
-    collected_at: timestamp, simulated: false,
+    profile: 'inspection', collection_status: 'ok', raw_bytes: Buffer.byteLength(JSON.stringify(request.body.raw_snapshot)),
+    collected_at: timestamp, simulated: false, uploaded: false,
   });
   assert.match(status.last_task.id, /^[a-f0-9-]{36}$/);
   state.resources.cpu.rows.push({ id: 'caller-mutation' });
@@ -864,7 +851,7 @@ test('queued operations serialize collection and HTTP submission, propagate revi
       if (body.operation === 'inspect') { entered.resolve(); await release.promise; }
       if (body.operation !== 'snapshot') {
         if (body.parameters.revision !== revision) return { status: 409, body: {
-          schema_version: '1.0', request_id: body.request_id,
+          schema_version: '1.1', request_id: body.request_id,
           error: { code: 'revision_conflict', message: 'stale revision', retryable: false },
         } };
         revision++;
@@ -888,7 +875,7 @@ test('queued operations serialize collection and HTTP submission, propagate revi
   assert.equal((await nextInspect).revision, 9);
   assert.deepEqual(api.requests.map(({ body }) => body.operation), ['snapshot', 'inspect', 'inspect', 'inspect']);
   assert.deepEqual(api.requests.slice(1).map(({ body }) => body.parameters.revision), [7, 7, 8]);
-  assert.deepEqual(processes.calls.map(({ profile }) => profile), ['resources', 'inspection', 'inspection', 'inspection']);
+  assert.deepEqual(processes.calls.map(({ role }) => role), ['initial', 'inspection', 'inspection', 'inspection']);
   assert.equal(new Set(api.requests.map(({ body }) => body.request_id)).size, 4);
   assert.equal((await controller.snapshot()).revision, 9);
   assert.equal(controller.status().last_task.operation, 'inspect');
@@ -900,7 +887,7 @@ test('OpenAPI error code, message, HTTP status and retryability propagate withou
   const { controller, api } = await controllerFixture(t, {
     handler(body, count) {
       if (count === 1) return { body: responseFor(body, healthState(42)) };
-      return { status: 503, body: { schema_version: '1.0', request_id: body.request_id,
+      return { status: 503, body: { schema_version: '1.1', request_id: body.request_id,
         error: { code: 'device_capacity', message: 'mock capacity reached', retryable: true } } };
     },
   });
@@ -977,7 +964,7 @@ test('unsupported operations and invalid reset parameters never reach the collec
   assert.equal(reset.revision, 1);
   assert.equal(api.requests[0].body.operation, 'reset');
   assert.deepEqual(api.requests[0].body.parameters, { hasGpu: true });
-  assert.equal(processes.calls[0].profile, 'resources');
+  assert.equal(processes.calls[0].role, 'initial');
   assert.equal(processes.calls[0].options.shell, false);
   assert.equal(controller.status().last_task.simulated, false);
   assert.equal((await controller.reset()).revision, 2);
@@ -987,7 +974,7 @@ test('unsupported operations and invalid reset parameters never reach the collec
 test('write operations return 409/read_only before any collection or HTTP submission, including without cached state or an installed collector', linux, async (t) => {
   for (const phase of ['cold', 'cached', 'disabled', 'uninstalled']) await t.test(phase, async (t) => {
     const { controller, processes, api, clock } = await controllerFixture(t, {
-      ...(phase === 'uninstalled' ? { mutateBundle: ({ root }) => fs.rmSync(path.join(root, 'manifest.json')) } : {}),
+      ...(phase === 'uninstalled' ? { mutateInstall: ({ tools }) => fs.rmSync(path.join(tools, 'idc_inspect')) } : {}),
     });
     const state = phase === 'cached' ? await controller.snapshot() : null;
     if (phase === 'disabled') controller.setEnabled(false);
@@ -1085,13 +1072,13 @@ test('inspection interval defaults to five minutes and accepts both integer boun
 });
 
 test('invalid initial inspection intervals are rejected before any collector or HTTP work', linux, async (t) => {
-  const files = bundle(t);
+  const files = sysakInstall(t);
   const processes = fakeProcesses(() => assert.fail('invalid options must not spawn'));
   let starts = 0;
   const startMockOpenApi = async () => { starts++; assert.fail('invalid options must not start the API'); };
   const clock = fakeClock();
   for (const minutes of ['5', 1.5, 0, -1, 1441, NaN, Infinity, null, false]) {
-    await assert.rejects(createIdcController({ bundleRoot: files.root, startMockOpenApi,
+    await assert.rejects(createIdcController({ sysakBinary: files.binary, bundleRoot: files.root, startMockOpenApi,
       ...processes, scheduler: clock.scheduler, inspectionIntervalMinutes: minutes }),
     errorIs('INVALID_INSPECTION_INTERVAL', 400));
   }
@@ -1101,7 +1088,7 @@ test('invalid initial inspection intervals are rejected before any collector or 
 });
 
 test('invalid interval values fail with 400 and leave settings, timer and cache unchanged', linux, async (t) => {
-  const settingsPath = path.join(bundle(t).root, 'idc-settings.json');
+  const settingsPath = path.join(sysakInstall(t).root, 'idc-settings.json');
   const { controller, processes, api, clock } = await controllerFixture(t, { settingsPath });
   const state = await controller.snapshot();
   controller.setInspectionInterval(1);
@@ -1122,7 +1109,7 @@ test('invalid interval values fail with 400 and leave settings, timer and cache 
 });
 
 test('inspection interval persists across restarts with the exact settings shape and no extra collection', linux, async (t) => {
-  const settingsPath = path.join(bundle(t).root, 'idc-settings.json');
+  const settingsPath = path.join(sysakInstall(t).root, 'idc-settings.json');
   const first = await controllerFixture(t, { settingsPath });
   assert.equal(first.controller.status().error, null, 'a missing settings file is not corrupt');
   first.controller.setInspectionInterval(1440);
@@ -1148,7 +1135,7 @@ test('corrupt or unreadable persisted settings report SETTINGS_LOAD_FAILED and s
     '{"inspection_interval_minutes":1.5}', '{"inspection_interval_minutes":0}',
     '{"inspection_interval_minutes":1441}', 'directory'];
   for (const contents of cases) await t.test(contents, async (t) => {
-    const settingsPath = path.join(bundle(t).root, 'idc-settings.json');
+    const settingsPath = path.join(sysakInstall(t).root, 'idc-settings.json');
     if (contents === 'directory') fs.mkdirSync(settingsPath);
     else fs.writeFileSync(settingsPath, contents);
     const { controller, processes, api, clock } = await controllerFixture(t, { settingsPath });
@@ -1162,7 +1149,7 @@ test('corrupt or unreadable persisted settings report SETTINGS_LOAD_FAILED and s
 });
 
 test('failed settings save leaves the previous interval, deadline, persisted value and cache intact', linux, async (t) => {
-  const root = bundle(t).root;
+  const root = sysakInstall(t).root;
   const parent = path.join(root, 'settings');
   fs.mkdirSync(parent);
   const settingsPath = path.join(parent, 'idc-settings.json');
@@ -1196,7 +1183,7 @@ test('first scheduled inspection initializes a missing snapshot then spawns insp
   assert.equal(processes.calls.length, 0);
   clock.advance(1);
   await autoFinished(controller, clock);
-  assert.deepEqual(processes.calls.map(({ profile }) => profile), ['resources', 'inspection']);
+  assert.deepEqual(processes.calls.map(({ role }) => role), ['initial', 'inspection']);
   assert.deepEqual(api.requests.map(({ body }) => body.operation), ['snapshot', 'inspect']);
   assert.deepEqual(api.requests[0].body.parameters, { hasGpu: false });
   assert.deepEqual(api.requests[1].body.parameters, { revision: 41 });
@@ -1204,7 +1191,7 @@ test('first scheduled inspection initializes a missing snapshot then spawns insp
   assert.equal(api.requests[1].body.request_id, processes.calls[1].requestId);
   assert.equal((await controller.snapshot(false)).revision, 42);
   assert.deepEqual(Object.keys(controller.status().last_task).sort(),
-    ['id', 'request_id', 'operation', 'status', 'profile', 'collection_status', 'raw_bytes', 'collected_at', 'simulated'].sort());
+    ['id', 'request_id', 'operation', 'status', 'profile', 'collection_status', 'raw_bytes', 'collected_at', 'simulated', 'uploaded'].sort());
   scheduledIn(controller, clock, 5);
 });
 
@@ -1222,7 +1209,7 @@ test('old cache polls stay cloned and never spawn until the independent inspecti
   }
   clock.advance(1);
   await autoFinished(controller, clock);
-  assert.deepEqual(processes.calls.map(({ profile }) => profile), ['resources', 'inspection']);
+  assert.deepEqual(processes.calls.map(({ role }) => role), ['initial', 'inspection']);
   assert.deepEqual(api.requests[1].body.parameters, { revision: initial.revision });
   assert.equal((await controller.snapshot(false)).revision, 2);
   scheduledIn(controller, clock, 1);
@@ -1305,12 +1292,12 @@ test('a late timer callback from before pause cannot erase or revive the resumed
 test('pause cancels an active automatic collection and resume preserves cache until the new deadline', linux, async (t) => {
   const { controller, processes, api, clock } = await controllerFixture(t, {
     inspectionIntervalMinutes: 1,
-    onSpawn(call) { if (call.profile === 'resources') call.succeed(); },
+    onSpawn(call) { if (call.role === 'initial') call.succeed(); },
   });
   const initial = await controller.snapshot();
   clock.advance(minute);
   await waitFor(() => processes.calls.length === 2, 'automatic inspection must spawn');
-  assert.equal(processes.calls[1].profile, 'inspection');
+  assert.equal(processes.calls[1].role, 'inspection');
   controller.setEnabled(false);
   await waitFor(() => controller.status().error?.code === 'COLLECTION_CANCELLED', 'pause must cancel the active collection');
   assert.equal(processes.kills[0].pid, processes.calls[1].child.pid);
@@ -1338,7 +1325,7 @@ test('slow automatic collection and HTTP submission never overlap or accumulate 
   t.after(() => release.resolve());
   const { controller, processes, api, clock } = await controllerFixture(t, {
     inspectionIntervalMinutes: 1,
-    onSpawn(call) { if (call.profile === 'resources') call.succeed(); },
+    onSpawn(call) { if (call.role === 'initial') call.succeed(); },
     async handler(body, count) {
       if (count === 2) { entered.resolve(); await release.promise; }
       return { body: responseFor(body, healthState(count)) };
@@ -1387,7 +1374,7 @@ test('automatic raw and HTTP failures retain cached state and last_task, then re
       },
       handler(body, count) {
         if (count === 2 && failure === 'http') return { status: 503, body: {
-          schema_version: '1.0', request_id: body.request_id,
+          schema_version: '1.1', request_id: body.request_id,
           error: { code: 'device_capacity', message: 'temporary mock capacity', retryable: true },
         } };
         return { body: responseFor(body, healthState(body.operation === 'snapshot' ? 7 : 8)) };
@@ -1425,7 +1412,7 @@ test('queued automatic inspection shares the manual queue and reads the latest r
       if (count === 2) { entered.resolve(); await release.promise; }
       if (body.operation !== 'snapshot') {
         if (body.parameters.revision !== revision) return { status: 409, body: {
-          schema_version: '1.0', request_id: body.request_id,
+          schema_version: '1.1', request_id: body.request_id,
           error: { code: 'revision_conflict', message: 'stale queued revision', retryable: false },
         } };
         revision++;
@@ -1450,7 +1437,7 @@ test('queued automatic inspection shares the manual queue and reads the latest r
   await autoFinished(controller, clock);
   assert.deepEqual(api.requests.map(({ body }) => body.operation), ['snapshot', 'inspect', 'inspect', 'inspect']);
   assert.deepEqual(api.requests.slice(1).map(({ body }) => body.parameters.revision), [7, 8, 9]);
-  assert.deepEqual(processes.calls.map(({ profile }) => profile), ['resources', 'inspection', 'inspection', 'inspection']);
+  assert.deepEqual(processes.calls.map(({ role }) => role), ['initial', 'inspection', 'inspection', 'inspection']);
   assert.equal((await controller.snapshot()).revision, 10);
   scheduledIn(controller, clock, 1);
 });
@@ -1459,7 +1446,7 @@ test('interval changes, pause/resume and close invalidate an automatic job alrea
   for (const action of ['interval', 'pause/resume', 'close']) await t.test(action, async (t) => {
     const { controller, processes, api, clock } = await controllerFixture(t, {
       inspectionIntervalMinutes: 1,
-      onSpawn(call) { if (call.profile === 'resources') call.succeed(); },
+      onSpawn(call) { if (call.role === 'initial') call.succeed(); },
     });
     await controller.snapshot();
     const started = processes.nextSpawn();
@@ -1499,5 +1486,374 @@ test('interval changes, pause/resume and close invalidate an automatic job alrea
       assert.equal(api.requests.at(-1).body.parameters.revision, action === 'interval' ? 2 : 1);
       scheduledIn(controller, clock, minutes);
     }
+  });
+});
+
+// 预发链路：sysAK 完成步骤1–4并把 request_id 覆盖为服务端 inspection_id，桌面只做步骤5。
+const inspectionId = '0123456789abcdef0123456789abcdef';
+const secondInspectionId = 'fedcba9876543210fedcba9876543210';
+const preConfig = {
+  endpoint: 'sysom-pre.fixture.invalid', accessKeyId: 'fixture-access-key-id',
+  accessKeySecret: 'fixture-access-key-secret', securityToken: '', regionId: 'cn-hangzhou', deviceId: '',
+};
+function sysomStub({ poll, report } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async pollHostInspection(id, options) {
+      calls.push({ method: 'poll', inspectionId: id, signal: options.signal });
+      if (poll) return poll(id, options);
+      options.onProgress?.({ status: 'running', phase: 'diagnose', progress: 50 });
+      return { status: 'success', phase: 'done', progress: 100, reportId: 'report-1', reportStatus: 'success' };
+    },
+    async getInspectionReport(reportId) {
+      calls.push({ method: 'report', reportId });
+      if (report) return report(reportId);
+      return { reportId, level: 'WARN', summary: 'fixture report' };
+    },
+  };
+}
+async function preFixture(t, { onSpawn, sysom, ...options } = {}) {
+  const client = sysom || sysomStub();
+  const fixture = await controllerFixture(t, {
+    onSpawn: onSpawn || ((call) => call.succeed(rawSnapshot(inspectionId))),
+    sysomConfig: preConfig, sysomClient: client, ...options,
+  });
+  return { ...fixture, client };
+}
+// A poll that stays in flight until the controller aborts it or the test releases it.
+function hangingPoll() {
+  const gate = deferred();
+  const aborted = [];
+  return {
+    gate, aborted,
+    poll(id, { signal, onProgress }) {
+      onProgress?.({ status: 'running', phase: 'diagnose', progress: 10 });
+      return new Promise((resolve, reject) => {
+        const cancel = () => { aborted.push(id); reject(Object.assign(new Error('poll aborted'), { code: 'AbortError' })); };
+        if (signal.aborted) return cancel();
+        signal.addEventListener('abort', cancel, { once: true });
+        void gate.promise.then(() => {
+          signal.removeEventListener('abort', cancel);
+          resolve({ status: 'success', phase: 'done', progress: 100, reportId: 'report-1', reportStatus: 'success' });
+        });
+      });
+    },
+  };
+}
+
+test('pre mode adopts the sysAK inspection_id and completes step 5 with a real cloud report', linux, async (t) => {
+  const { controller, processes, api, client } = await preFixture(t);
+  assert.equal(controller.status().mode, 'pre');
+  assert.equal(controller.status().cloud_inspection, null);
+  assert.equal((await controller.snapshot()).mode, 'collected');
+  const call = processes.calls[0];
+  assert.deepEqual(call.argv, ['idc_inspect', '--request-id', call.requestId, '-o', '-']);
+  assert.match(call.requestId, /^[a-f0-9-]{36}$/);
+  assert.notEqual(call.requestId, inspectionId, 'sysAK receives a local UUID and overwrites it with the server inspection_id');
+  assert.equal(api.requests[0].body.request_id, inspectionId);
+  assert.equal(api.requests[0].body.raw_snapshot.request_id, inspectionId);
+  assert.equal(api.requests[0].body.schema_version, '1.1');
+  const task = controller.status().last_task;
+  assert.equal(task.request_id, inspectionId);
+  assert.equal(task.inspection_id, inspectionId);
+  assert.equal(task.uploaded, true);
+  assert.equal(task.profile, 'inspection');
+  assert.equal(task.simulated, false);
+  await waitFor(() => controller.status().cloud_inspection?.report != null, 'step 5 must fetch the real report');
+  const cloud = controller.status().cloud_inspection;
+  assert.equal(cloud.inspectionId, inspectionId);
+  assert.equal(cloud.status, 'success');
+  assert.equal(cloud.phase, 'done');
+  assert.equal(cloud.progress, 100);
+  assert.equal(cloud.reportId, 'report-1');
+  assert.equal(cloud.reportStatus, 'success');
+  assert.deepEqual(cloud.report, { reportId: 'report-1', level: 'WARN', summary: 'fixture report' });
+  assert.equal(cloud.error, null);
+  assert.deepEqual(client.calls.map(({ method }) => method), ['poll', 'report']);
+  assert.equal(client.calls[0].inspectionId, inspectionId);
+  assert.equal(client.calls[1].reportId, 'report-1');
+  assert.equal(controller.status().phase, 'idle');
+  assert.equal(controller.status().error, null);
+  assert(!JSON.stringify(controller.status()).includes(preConfig.accessKeySecret));
+  assert(!JSON.stringify(controller.status()).includes(preConfig.accessKeyId));
+});
+
+test('a sysAK upload failure keeps the local UUID, records UploadFailed and never polls step 5', linux, async (t) => {
+  for (const [name, stderr, detail] of [
+    ['reported reason', 'idc_inspect: upload failed: SubmitHostInspection 503\n', 'upload failed: SubmitHostInspection 503'],
+    ['reason among other lines', 'sysak: loading\n  idc_inspect: upload skipped: no credential  \ntrailing\n', 'upload skipped: no credential'],
+    ['no upload line', 'sysak: unrelated notice\n', 'sysAK 未完成云端上传'],
+    ['empty stderr', '', 'sysAK 未完成云端上传'],
+  ]) await t.test(name, async (t) => {
+    const { controller, processes, api, client } = await preFixture(t, {
+      onSpawn(call) { call.succeed(rawSnapshot(call.requestId), stderr); },
+    });
+    await controller.snapshot();
+    const requestId = processes.calls[0].requestId;
+    const task = controller.status().last_task;
+    assert.equal(task.request_id, requestId);
+    assert.equal(task.uploaded, false);
+    assert.equal(task.inspection_id, undefined);
+    assert.equal(task.status, 'completed');
+    assert.equal(api.requests[0].body.request_id, requestId);
+    const cloud = controller.status().cloud_inspection;
+    assert.equal(cloud.inspectionId, '');
+    assert.equal(cloud.status, 'failed');
+    assert.equal(cloud.progress, 0);
+    assert.equal(cloud.reportId, null);
+    assert.equal(cloud.report, null);
+    assert.equal(cloud.error.code, 'UploadFailed');
+    assert.equal(cloud.error.message, `上传失败：${detail}；本次仅本地采集`);
+    assert.deepEqual(client.calls, []);
+    assert.equal(controller.status().phase, 'idle');
+    assert.equal(controller.status().error, null);
+  });
+});
+
+test('only pre mode accepts a server inspection_id in place of the local request UUID', linux, async (t) => {
+  await t.test('mock controller rejects the overwritten identity', async (t) => {
+    const { controller, processes, api } = await controllerFixture(t, {
+      onSpawn(call) { call.succeed(rawSnapshot(inspectionId)); },
+    });
+    await assert.rejects(controller.snapshot(), errorIs('INVALID_COLLECTION', 502, true));
+    assert.equal(api.requests.length, 0);
+    assert.equal(controller.status().last_task, null);
+    assert.equal(controller.status().cloud_inspection, null);
+    assert.equal(processes.calls.length, 1);
+  });
+  await t.test('collectRaw rejects it without allowInspectionId and accepts it with', async (t) => {
+    const strict = rawFixture(t, (call) => call.succeed(rawSnapshot(inspectionId)));
+    await assert.rejects(strict.run(), errorIs('INVALID_COLLECTION', 502, true));
+    const pre = rawFixture(t, (call) => call.succeed(rawSnapshot(inspectionId)), 1000, { allowInspectionId: true });
+    assert.equal((await pre.run()).raw.request_id, inspectionId);
+    const malformed = rawFixture(t, (call) => call.succeed(rawSnapshot('0'.repeat(31))), 1000, { allowInspectionId: true });
+    await assert.rejects(malformed.run(), errorIs('INVALID_COLLECTION', 502, true));
+  });
+});
+
+test('cloud poll and report failures stay inside cloud_inspection without losing the local collection', linux, async (t) => {
+  for (const [name, options, code, message] of [
+    ['poll failure', { poll: async () => { throw Object.assign(new Error('云端巡检不可用'), { code: 'Throttling' }); } }, 'Throttling', '云端巡检不可用'],
+    ['poll failure without a code', { poll: async () => { throw new Error('poll exploded'); } }, 'CloudPollFailed', 'poll exploded'],
+    ['report failure', { report: async () => { throw Object.assign(new Error('报告无权限'), { code: 'ReportDenied' }); } }, 'ReportDenied', '报告无权限'],
+    ['report failure without a code', { report: async () => { throw new Error('report exploded'); } }, 'ReportFetchFailed', 'report exploded'],
+  ]) await t.test(name, async (t) => {
+    const { controller, client } = await preFixture(t, { sysom: sysomStub(options) });
+    const state = await controller.snapshot();
+    assert.equal(state.mode, 'collected');
+    await waitFor(() => controller.status().cloud_inspection?.error != null, 'the cloud failure must be recorded');
+    const cloud = controller.status().cloud_inspection;
+    assert.deepEqual(cloud.error, { code, message });
+    assert.equal(cloud.inspectionId, inspectionId);
+    assert.equal(cloud.report, null);
+    if (code === 'Throttling' || code === 'CloudPollFailed') {
+      assert.equal(cloud.status, 'queued');
+      assert.equal(cloud.reportId, null);
+      assert.deepEqual(client.calls.map(({ method }) => method), ['poll']);
+    } else {
+      assert.equal(cloud.status, 'success');
+      assert.equal(cloud.reportId, 'report-1');
+      assert.deepEqual(client.calls.map(({ method }) => method), ['poll', 'report']);
+    }
+    assert.equal(controller.status().last_task.uploaded, true);
+    assert.equal(controller.status().phase, 'idle');
+    assert.equal(controller.status().error, null);
+    assert.deepEqual(await controller.snapshot(), state);
+  });
+});
+
+test('a terminal task without a reportId stops after polling and a new collection, pause or close aborts an in-flight poll', linux, async (t) => {
+  await t.test('no reportId means no report fetch', async (t) => {
+    const { controller, client } = await preFixture(t, {
+      sysom: sysomStub({ poll: async () => ({ status: 'success', progress: 100, reportId: null }) }),
+    });
+    await controller.snapshot();
+    await waitFor(() => controller.status().cloud_inspection?.status === 'success', 'the terminal task view must land');
+    assert.equal(controller.status().cloud_inspection.report, null);
+    assert.equal(controller.status().cloud_inspection.error, null);
+    assert.deepEqual(client.calls.map(({ method }) => method), ['poll']);
+  });
+  for (const action of ['collect', 'pause', 'close']) await t.test(action, async (t) => {
+    const hanging = hangingPoll();
+    const ids = [inspectionId, secondInspectionId];
+    const { controller, processes, client } = await preFixture(t, {
+      onSpawn(call) { call.succeed(rawSnapshot(ids[call.index])); },
+      sysom: sysomStub({ poll: hanging.poll }),
+    });
+    await controller.snapshot();
+    await waitFor(() => controller.status().cloud_inspection?.status === 'running', 'the first poll must be in flight');
+    assert.equal(controller.status().cloud_inspection.progress, 10);
+    assert.equal(hanging.aborted.length, 0);
+    if (action === 'collect') {
+      const second = await controller.snapshot(true);
+      assert.equal(second.mode, 'collected');
+      await waitFor(() => controller.status().cloud_inspection?.inspectionId === secondInspectionId,
+      'a new collection must replace the stale cloud task');
+      assert.equal(processes.calls.length, 2);
+    } else if (action === 'pause') controller.setEnabled(false);
+    else await controller.close();
+    assert.deepEqual(hanging.aborted, [inspectionId]);
+    assert.equal(client.calls.length, action === 'collect' ? 2 : 1);
+    assert.equal(client.calls[0].signal.aborted, true);
+    await turn();
+    await turn();
+    assert.equal(controller.status().cloud_inspection.inspectionId,
+      action === 'collect' ? secondInspectionId : inspectionId,
+      'an aborted poll must not overwrite the cloud task view');
+    assert.equal(controller.status().cloud_inspection.report, null);
+    assert.equal(controller.status().cloud_inspection.error, null);
+    hanging.gate.resolve();
+    await turn();
+    await turn();
+    if (action === 'collect') {
+      await waitFor(() => controller.status().cloud_inspection?.report != null, 'the replacement poll must still complete');
+      assert.equal(controller.status().cloud_inspection.inspectionId, secondInspectionId);
+      assert.deepEqual(client.calls.map(({ method }) => method), ['poll', 'poll', 'report']);
+    } else {
+      assert.equal(controller.status().cloud_inspection.report, null, 'a released stale poll must still be discarded');
+      assert.deepEqual(client.calls.map(({ method }) => method), ['poll']);
+    }
+  });
+});
+
+test('the sysAK child env forwards only the upload whitelist, and only in pre mode', linux, async (t) => {
+  const base = { LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' };
+  const injected = {
+    SYSOM_POP_ENDPOINT: 'https://sysom-pre.fixture.invalid', SYSOM_ACCESS_KEY_ID: 'fixture-access-key-id',
+    SYSOM_ACCESS_KEY_SECRET: 'fixture-access-key-secret', SYSOM_REGION_ID: 'cn-hangzhou',
+    SYSOM_DEVICE_ID: 'fixture-device', SYSOM_IDC_UPLOAD: '1', SYSOM_SECURITY_TOKEN: '',
+    SYSOM_UNRELATED_SECRET: 'must-never-reach-sysak',
+  };
+  const saved = new Map(Object.keys(injected).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(injected)) process.env[key] = value;
+  t.after(() => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const pre = await preFixture(t);
+  await pre.controller.snapshot();
+  const preEnv = pre.processes.calls[0].options.env;
+  assert.deepEqual(Object.keys(preEnv).sort(),
+    ['LANG', 'PATH', 'PYTHONDONTWRITEBYTECODE', 'SYSOM_ACCESS_KEY_ID', 'SYSOM_ACCESS_KEY_SECRET',
+      'SYSOM_DEVICE_ID', 'SYSOM_IDC_UPLOAD', 'SYSOM_POP_ENDPOINT', 'SYSOM_REGION_ID'].sort());
+  for (const [key, value] of Object.entries(injected)) {
+    if (key === 'SYSOM_UNRELATED_SECRET' || value === '') assert.equal(preEnv[key], undefined);
+    else assert.equal(preEnv[key], value);
+  }
+  assert.equal(preEnv.PATH, process.env.PATH);
+  assert.equal(pre.processes.calls[0].options.shell, false);
+  const mock = await controllerFixture(t);
+  await mock.controller.snapshot();
+  const mockEnv = mock.processes.calls[0].options.env;
+  assert.deepEqual(Object.keys(mockEnv).sort(), ['LANG', 'PATH', 'PYTHONDONTWRITEBYTECODE']);
+  assert.equal(mockEnv.PATH, process.env.PATH);
+  assert.equal(mockEnv.LANG, base.LANG);
+  assert.equal(mockEnv.PYTHONDONTWRITEBYTECODE, base.PYTHONDONTWRITEBYTECODE);
+  assert(!JSON.stringify(mock.controller.status()).includes(injected.SYSOM_ACCESS_KEY_SECRET));
+});
+
+test('process cleanup eligibility needs a starttime identity observed in this collection and a successful check', linux, async (t) => {
+  const identified = (extra = {}) => collectedRow({ starttime: STARTTIME, ...extra });
+  const stateWithRows = () => {
+    const state = healthState();
+    state.resources.cpu.rows = [identified(), identified({ id: 'process-101-999', starttime: 999 }),
+      identified({ id: 'process-202-1000', pid: 202 })];
+    state.resources.memory.rows = [identified()];
+    state.resources.disk.rows = [identified()];
+    state.resources.gpu.rows = [identified()];
+    state.resources.energy.rows = [identified({ id: 'rapl-0' })];
+    return state;
+  };
+  await t.test('eligible identity is checked once and marked cleanable across cpu/memory/disk only', async (t) => {
+    const expected = stateWithRows();
+    const { controller, processActions } = await controllerFixture(t, {
+      handler(body) { return { body: responseFor(body, structuredClone(expected)) }; },
+      processActionImpl: async (action, targets) => {
+        processActions.push({ action, targets });
+        return targets.map(() => ({ status: 'eligible', eligible: true }));
+      },
+    });
+    const state = await controller.snapshot();
+    assert.deepEqual(processActions, [{ action: 'check', targets: [{ pid: PID, starttime: STARTTIME }] }]);
+    for (const id of ['cpu', 'memory', 'disk']) {
+      assert.equal(state.resources[id].rows[0].cleanable, true);
+      assert.equal(state.resources[id].rows[0].effect, '结束整个进程（SIGTERM），可能中断任务');
+    }
+    for (const row of state.resources.cpu.rows.slice(1)) {
+      assert.equal(row.cleanable, false);
+      assert.equal(row.effect, '身份无法核验');
+    }
+    for (const id of ['gpu', 'energy']) {
+      assert.equal(state.resources[id].rows[0].cleanable, false);
+      assert.equal(state.resources[id].rows[0].effect, '非进程对象或身份无法核验');
+    }
+  });
+  await t.test('an ineligible check keeps the sysAK reason and never marks the row cleanable', async (t) => {
+    const expected = stateWithRows();
+    const { controller } = await controllerFixture(t, {
+      handler(body) { return { body: responseFor(body, structuredClone(expected)) }; },
+      processActionImpl: async (action, targets) => targets.map(() => ({ status: 'protected', eligible: false, reason: '关键系统进程' })),
+    });
+    const state = await controller.snapshot();
+    for (const id of ['cpu', 'memory', 'disk']) {
+      assert.equal(state.resources[id].rows[0].cleanable, false);
+      assert.equal(state.resources[id].rows[0].effect, '关键系统进程');
+    }
+  });
+  await t.test('a failed check degrades every candidate row without failing the collection', async (t) => {
+    const expected = stateWithRows();
+    const { controller, api } = await controllerFixture(t, {
+      handler(body) { return { body: responseFor(body, structuredClone(expected)) }; },
+      processActionImpl: async () => { throw new Error('sysak unavailable'); },
+    });
+    const state = await controller.snapshot();
+    assert.equal(state.mode, 'collected');
+    assert.equal(api.requests.length, 1);
+    for (const id of ['cpu', 'memory', 'disk']) for (const row of state.resources[id].rows) {
+      assert.equal(row.cleanable, false);
+      assert.equal(row.effect, '受控进程操作不可用，请检查 sysAK 版本和权限');
+    }
+  });
+  await t.test('rows without starttime never reach the process action', async (t) => {
+    const expected = healthState();
+    expected.resources.cpu.rows = [collectedRow()];
+    const { controller, processActions } = await controllerFixture(t, {
+      handler(body) { return { body: responseFor(body, structuredClone(expected)) }; },
+    });
+    const state = await controller.snapshot();
+    assert.deepEqual(processActions, []);
+    assert.equal(state.resources.cpu.rows[0].cleanable, false);
+    assert.equal(state.resources.cpu.rows[0].effect, '非进程对象或身份无法核验');
+  });
+  await t.test('at most 100 identities are checked per collection', async (t) => {
+    const expected = healthState();
+    expected.resources.cpu.rows = Array.from({ length: 120 }, (_, index) => collectedRow({
+      id: `process-${1000 + index}-${5000 + index}`, pid: 1000 + index, starttime: 5000 + index, name: `p${index}`,
+    }));
+    const { controller, processActions } = await controllerFixture(t, {
+      onSpawn(call) {
+        const raw = rawSnapshot(call.requestId);
+        raw.sections.process.top_cpu = Array.from({ length: 120 }, (_, index) => ({
+          pid: 1000 + index, starttime: 5000 + index, comm: `p${index}`, cpu_pct: 1, rss_kb: 1,
+        }));
+        call.succeed(raw);
+      },
+      handler(body) { return { body: responseFor(body, structuredClone(expected)) }; },
+      processActionImpl: async (action, targets) => {
+        processActions.push({ action, targets });
+        return targets.map(() => ({ status: 'eligible', eligible: true }));
+      },
+    });
+    const state = await controller.snapshot();
+    assert.equal(processActions.length, 1);
+    assert.equal(processActions[0].targets.length, 100);
+    assert.deepEqual(processActions[0].targets[0], { pid: 1000, starttime: 5000 });
+    assert.deepEqual(processActions[0].targets[99], { pid: 1099, starttime: 5099 });
+    assert.equal(state.resources.cpu.rows.filter((row) => row.cleanable).length, 100);
+    assert.equal(state.resources.cpu.rows[100].cleanable, false);
+    assert.equal(state.resources.cpu.rows[100].effect, '身份无法核验');
   });
 });

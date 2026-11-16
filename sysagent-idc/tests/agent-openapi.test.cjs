@@ -7,6 +7,7 @@ const http = require('node:http');
 const clientRequest = http.request;
 const crypto = require('node:crypto');
 const ts = require('typescript');
+const { rawSnapshot } = require('./fixtures.cjs');
 
 const root = path.resolve(__dirname, '..');
 const spec = JSON.parse(fs.readFileSync(path.join(root, 'openapi-contract.json'), 'utf8'));
@@ -66,16 +67,14 @@ function payload() {
     },
   };
 }
+// SysAK collection evidence follows the idc_inspect schema 1.1 contract; the
+// AgentSight envelopes above deliberately stay on their independent 1.0 contract.
 function sysak(deviceId = crypto.randomUUID(), operation = 'snapshot', parameters = {}) {
   const requestId = crypto.randomUUID();
-  return {
-    schema_version: '1.0', request_id: requestId, device_id: deviceId, operation, parameters,
-    raw_snapshot: {
-      schema_version: '1.0', request_id: requestId, collector: { name: 'sysak' }, device: {},
-      collection: { profile: operation === 'inspect' ? 'inspection' : 'resources', status: 'partial', finished_at: sampledAt },
-      resources: {}, configuration: {}, diagnostics: {}, capabilities: { read_only: true },
-    },
-  };
+  const raw = rawSnapshot(requestId);
+  raw.collection.status = 'partial';
+  raw.collection.finished_at = sampledAt;
+  return { schema_version: '1.1', request_id: requestId, device_id: deviceId, operation, parameters, raw_snapshot: raw };
 }
 function matches(schema, value, at = '$') {
   if (schema.$ref) matches(schema.$ref.slice(2).split('/').reduce((item, key) => item[key], spec), value, at);

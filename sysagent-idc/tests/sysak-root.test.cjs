@@ -9,14 +9,15 @@ const net = require('node:net');
 const childProcess = require('node:child_process');
 const root = require('../electron/sysak-root.cjs');
 const { verifyRootInstallation, connectRootIdc, INSTALLED_ROOT, HELPER, SOCKET, AUTH } = root;
-// Consumers capture this inert spawn as their default too, so a regression can
-// never start a process, even without a caller-provided spawnImpl.
+// Consumers capture this inert spawn as their default too, so no test can ever
+// start a real process; current-user collection is driven by explicit spawn doubles.
 const savedSpawn = childProcess.spawn;
-let collectRaw, createIdcController, runProcessAction;
+let collectRaw, createIdcController, runProcessAction, controlAgentCollection;
 try {
-  childProcess.spawn = () => assert.fail('production consumers must never spawn');
+  childProcess.spawn = () => assert.fail('no test may start a real process');
   ({ collectRaw, createIdcController } = require('../electron/idc-controller.cjs'));
   ({ runProcessAction } = require('../electron/process-control.cjs'));
+  ({ controlAgentCollection } = require('../electron/agentsight-client.cjs'));
 } finally {
   childProcess.spawn = savedSpawn;
 }
@@ -34,7 +35,7 @@ const hash = content => createHash('sha256').update(content).digest('hex');
 const NOW = 1793536496000;
 const UID = 1000;
 const TOOLS = '.sysak_components/tools';
-const COMMANDS = ['idc', 'resource_anomaly', 'memgraph', 'ai'];
+const COMMANDS = ['idc_inspect', 'resource_anomaly', 'memgraph', 'ai'];
 const SAFE_PROFILES = { resource_anomaly: ['--idc'], memgraph: ['--graph', '--jsonstdout'], ai: ['--threshold', '1s'] };
 const MODULES = [
   'resource_anomaly_idc', 'fdleak_metrics', 'plugin_abnormalPackages', 'plugin_anonTaskTop', 'plugin_cache',
@@ -44,10 +45,10 @@ const MODULES = [
 const FILES = ['sysak', `${TOOLS}/.sysak.rules`, ...COMMANDS.map(name => `${TOOLS}/${name}`),
   ...MODULES.map(name => `${TOOLS}/${name}.py`)].sort();
 const DIRECTORIES = ['', '.sysak_components', TOOLS];
-const COLLECTOR = `${TOOLS}/idc`;
+const COLLECTOR = `${TOOLS}/idc_inspect`;
 const AI = `${TOOLS}/ai`;
 const RULES = `${TOOLS}/.sysak.rules`;
-const canonicalRules = 'detect/generic:idc:python-dep{python3}:help{idc}\n' +
+const canonicalRules = 'detect/generic:idc_inspect:python-dep{python3}:help{idc_inspect}\n' +
   'detect/generic:resource_anomaly:python-dep{python3}:help{resource_anomaly --idc only}\n' +
   'detect/mem:memgraph:python-dep{python3}:help{memgraph --graph --jsonstdout}\n' +
   'generic:ai::help{GPU AI diagnostics}\n';
@@ -62,8 +63,14 @@ function mockElf(arch = process.arch) {
 }
 const MiB = 1024 * 1024;
 const turn = () => new Promise(resolve => setImmediate(resolve));
+// The root service only brokers AgentSight collection control now.
+const agentArgs = (action = 'status') => ['idc', '--agent-collection', action];
+// Retired root argv families: collection and process actions run as the current user.
 const collectionArgs = (id = randomUUID(), profile = 'resources') =>
   ['idc', '--profile', profile, '--request-id', id, '-o', '-'];
+const inspectArgs = (id = randomUUID()) => ['idc_inspect', '--request-id', id, '-o', '-'];
+const processArgs = (action = 'check') => ['idc_inspect', '--process-action', action];
+const SYSTEM_SYSAK = '/usr/bin/sysak';
 
 // The entire installation, including ownership and modes, exists only in memory.
 // Unknown paths fail instead of falling through to the real filesystem.
@@ -396,7 +403,7 @@ function observe(request) {
   request.on('close', code => result.codes.push(code));
   return result;
 }
-function connectionFixture(t, args = collectionArgs()) {
+function connectionFixture(t, args = agentArgs()) {
   const files = installationFixture(t);
   mockDefaultIo(t, files);
   const socket = fakeSocket(t);
@@ -406,15 +413,88 @@ function connectionFixture(t, args = collectionArgs()) {
   t.after(() => request.kill());
   return { files, socket, request, result, calls };
 }
-function rawSnapshot(profile, requestId) {
-  return { schema_version: '1.0', request_id: requestId, collected_at: new Date(NOW).toISOString(),
-    collector: { name: 'sysak', permissions: { status: 'granted', elevated: true, denied: [] } },
-    collection: { profile, status: 'ok' }, capabilities: { read_only: true },
-    resources: {}, configuration: {}, diagnostics: {} };
+// Current-user `sysak idc_inspect` schema 1.1 envelope (compact subset).
+function inspectRaw(requestId, sections = {}) {
+  return { schema_version: '1.1', request_id: requestId,
+    collector: { name: 'sysak', command: 'idc_inspect', version: 'fixture-1.1' },
+    collection: { profile: 'inspection', status: 'ok', finished_at: new Date(NOW).toISOString(), duration_ms: 1200, sections: {} },
+    host: { hostname: 'fixture-host' }, device: { id: 'fixture-device' }, capabilities: { read_only: true },
+    sections: { cpu: { status: 'ok' }, memory: { status: 'ok' }, disk: { status: 'ok' }, fd: { status: 'ok' }, ...sections } };
 }
 function processReply(action, targets) {
   return { schema_version: '1.0', action, results: targets.map(target => ({ ...target,
     name: 'fixture-only', status: action === 'check' ? 'eligible' : 'signalled', eligible: true, reason: 'fixture' })) };
+}
+function collectionStatusReply(action) {
+  const running = action !== 'disable';
+  return { state: running ? 'running' : 'disabled', enabled: running, scope: running ? 'host' : 'none',
+    trace_running: running, api_running: running };
+}
+// Inert current-user sysAK double: no real process, process group or signal exists.
+function fakeSysakChild(kills) {
+  const child = new EventEmitter();
+  child.pid = 990099;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  const input = [];
+  child.stdin.on('data', chunk => input.push(chunk));
+  child.input = () => Buffer.concat(input).toString('utf8');
+  let finished = false;
+  child.finish = (code = 0) => {
+    if (finished) return;
+    finished = true;
+    child.stdout.end();
+    child.stderr.end();
+    setImmediate(() => child.emit('close', code));
+  };
+  child.kill = signal => { kills.push(signal); child.finish(null); return true; };
+  return child;
+}
+function sysakSpawnFixture(t, onSpawn) {
+  const calls = [];
+  const kills = [];
+  const groups = [];
+  const spawnImpl = (file, argv, options) => {
+    const child = fakeSysakChild(kills);
+    const call = { file, argv, options, child };
+    calls.push(call);
+    t.after(() => child.finish(null));
+    setImmediate(() => onSpawn?.(child, call));
+    return child;
+  };
+  return { spawnImpl, calls, kills, groups, killGroup: (pid, signal) => { groups.push([pid, signal]); } };
+}
+// The system sysAK installation resolveSysak() looks for, entirely in memory.
+function systemSysakFixture({ component = true, rules = true } = {}) {
+  const components = '/usr/bin/.sysak_components';
+  const entry = `${components}/tools/idc_inspect`;
+  const rulesFile = `${components}/tools/.sysak.rules`;
+  const files = new Map([[SYSTEM_SYSAK, Buffer.from('# inert system sysak\n')]]);
+  if (component) files.set(entry, Buffer.from('#!/usr/bin/env python3\n# inert idc_inspect\n'));
+  if (rules) files.set(rulesFile, Buffer.from(canonicalRules));
+  const missing = name => Object.assign(new Error(`missing fixture: ${name}`), { code: 'ENOENT' });
+  return { binary: SYSTEM_SYSAK, components, entry, rulesFile, files, io: {
+    statSync(name) { if (!files.has(name)) throw missing(name); return { isFile: () => true }; },
+    existsSync(name) { return name === components; },
+    realpathSync(name) { if (!files.has(name)) throw missing(name); return name; },
+    accessSync(name) { if (!files.has(name)) throw missing(name); },
+    readFileSync(name, encoding) {
+      if (!files.has(name)) throw missing(name);
+      const content = files.get(name);
+      return encoding ? content.toString(encoding) : Buffer.from(content);
+    },
+  } };
+}
+// Root installation IO stays observable (any consultation is recorded), while the
+// current-user system sysAK resolves from its own in-memory fixture.
+function mockCurrentUserInfo(t, files, system) {
+  for (const name of ['lstatSync', 'readdirSync']) t.mock.method(fs, name, files.io[name]);
+  for (const name of ['statSync', 'existsSync', 'realpathSync', 'accessSync', 'readFileSync']) t.mock.method(fs, name, system.io[name]);
+  t.mock.method(Date, 'now', () => NOW);
+  t.mock.method(net, 'createConnection', () => assert.fail('current-user collection must never open the root socket'));
+  t.mock.method(childProcess, 'spawn', () => assert.fail('only inert spawn doubles are allowed'));
+  t.mock.method(process, 'kill', () => assert.fail('production signals are forbidden'));
 }
 function consumerSocket(t, onRequest) {
   const files = installationFixture(t);
@@ -513,53 +593,65 @@ test('unexpected files/directories are refused even outside the hashed manifest'
   }
 });
 
-test('connector uses one fixed socket and exact credential-free request; actions wait for stdin and connection', { timeout: 5000 }, async t => {
-  for (const action of ['check', 'terminate']) for (const order of ['connect first', 'stdin first']) {
+test('connector uses one fixed socket and exact credential-free request; collection control waits for stdin and connection', { timeout: 5000 }, async t => {
+  for (const action of ['status', 'ensure', 'disable']) for (const order of ['connect first', 'stdin first']) {
     await t.test(`${action}: ${order}`, async t => {
-      const args = ['idc', '--process-action', action];
+      const args = agentArgs(action);
       const { files, socket, request, result, calls } = connectionFixture(t, args);
       assert(request instanceof EventEmitter);
       for (const stream of ['stdin', 'stdout', 'stderr']) assert(request[stream] instanceof PassThrough);
       assert.equal('pid' in request, false, 'socket request must not have a signalable PID');
-      const stdin = JSON.stringify({ manager_pid: 990099, targets: [{ pid: 900101, starttime: 1000 }] });
       if (order === 'connect first') socket.emit('connect');
-      request.stdin.write(stdin.slice(0, 10));
-      assert.equal(socket.writes.length, 0, 'never send partial input');
-      request.stdin.end(stdin.slice(10));
+      assert.equal(socket.writes.length, 0, 'never send before the final input');
+      request.stdin.end();
       await turn();
       if (order === 'stdin first') {
         assert.equal(socket.writes.length, 0, 'wait for connection');
         socket.emit('connect');
       }
       assert.deepEqual(calls, [{ path: SOCKET }]);
-      assert.deepEqual(socket.writes, [JSON.stringify({ schema_version: '1.0', args, stdin,
-        deadline: NOW + 15000, manifest_sha256: files.manifestHash() }) + '\n']);
+      assert.deepEqual(socket.writes, [JSON.stringify({ schema_version: '1.0', args, stdin: '',
+        deadline: NOW + 35000, manifest_sha256: files.manifestHash() }) + '\n']);
       socket.frame({ code: 0 });
       assert.deepEqual(result.codes, [0]);
       assert.deepEqual(result.errors, []);
       assert.equal(socket.destroyed, true);
     });
   }
-  for (const profile of ['resources', 'inspection']) await t.test(profile, async t => {
-    const args = collectionArgs(randomUUID(), profile);
-    const { files, socket, request } = connectionFixture(t, args);
+  // The service refuses every payload (root-helper Protocol suite); the client must
+  // still buffer the whole input and write exactly one framed request.
+  await t.test('partial payload is never sent', async t => {
+    const args = agentArgs('ensure');
+    const { files, socket, request, result } = connectionFixture(t, args);
     socket.emit('connect');
+    request.stdin.write('{"manager_pid":99');
+    assert.equal(socket.writes.length, 0, 'never send partial input');
+    request.stdin.end('0099,"targets":[]}');
     await turn();
-    assert.equal(request.stdin.writableEnded, true);
-    assert.deepEqual(socket.writes, [JSON.stringify({ schema_version: '1.0', args, stdin: '',
-      deadline: NOW + 35000, manifest_sha256: files.manifestHash() }) + '\n']);
-    socket.frame({ code: 0 });
+    assert.deepEqual(socket.writes, [JSON.stringify({ schema_version: '1.0', args,
+      stdin: '{"manager_pid":990099,"targets":[]}', deadline: NOW + 35000, manifest_sha256: files.manifestHash() }) + '\n']);
+    socket.frame({ code: 126, error: 'ROOT_COLLECTOR_UNAVAILABLE' });
+    assert.deepEqual(result.codes, [126]);
   });
 });
 
-test('invalidRequest accepts only exact sysak idc collection/action argv and opens no socket', async t => {
+test('root client accepts only AgentSight collection-control argv and opens no socket for anything else', async t => {
   for (const args of [[], ['idc'], ['memgraph'], ['ai', '--threshold', '1s'], ['ai', '--idc'], ['gpudiag', '--idc'],
+    // Retired root capabilities: collection profiles and process actions are refused.
+    collectionArgs(), collectionArgs(randomUUID(), 'inspection'),
     collectionArgs(randomUUID(), 'ai'), collectionArgs(randomUUID(), 'gpudiag'),
+    inspectArgs(), processArgs('check'), processArgs('terminate'),
+    ['idc', '--process-action', 'check'], ['idc', '--process-action', 'terminate'],
     ['resource_anomaly', '--process-action', 'check'],
     ['idc', '--process-action', 'exec'], ['idc', '--process-action', 'check', 'extra'],
     ['idc', '--profile', '--process-action'], collectionArgs('not-a-uuid'),
     collectionArgs(randomUUID(), 'all'), [...collectionArgs(), '--uid', String(UID)],
-    ['idc', '--profile', 'resources', '--request-id', randomUUID(), '-o', '/tmp/output'], ['sh', '-c', 'sysak idc']]) {
+    ['idc', '--profile', 'resources', '--request-id', randomUUID(), '-o', '/tmp/output'], ['sh', '-c', 'sysak idc'],
+    // Collection control itself cannot be extended, reordered or given a payload path.
+    ['idc', '--agent-collection'], ['idc', '--agent-collection', 'enable'], ['idc', '--agent-collection', ''],
+    ['idc', '--agent-collection', 'status', '--uid', String(UID)], ['idc', '--agent-collection', 'ensure', '/bin/sh'],
+    ['idc_inspect', '--agent-collection', 'status'], ['--agent-collection', 'idc', 'status'],
+    ['idc', '--agent-collection', 'STATUS'], ['idc', '--agent-collection', 'status;id']]) {
     await t.test(JSON.stringify(args), t => {
       const fixture = installationFixture(t);
       mockDefaultIo(t, fixture);
@@ -581,7 +673,7 @@ test('unverified installation fails before connecting; no sudo/pkexec/ordinary-u
       if (kind === 'unsafe socket ancestor') fixture.nodes.get(path.dirname(SOCKET)).mode |= 0o002;
       mockDefaultIo(t, fixture);
       let connections = 0;
-      assert.throws(() => connectRootIdc(fixture.binary, collectionArgs(), { connectImpl() { connections++; assert.fail('unverified connection'); } }), rootFailure);
+      assert.throws(() => connectRootIdc(fixture.binary, agentArgs(), { connectImpl() { connections++; assert.fail('unverified connection'); } }), rootFailure);
       assert.equal(connections, 0);
     });
   }
@@ -590,7 +682,7 @@ test('unverified installation fails before connecting; no sudo/pkexec/ordinary-u
     mockDefaultIo(t, fixture);
     let calls = 0;
     const failure = new Error('inert connect failure');
-    assert.throws(() => connectRootIdc(fixture.binary, collectionArgs(), { connectImpl() { calls++; throw failure; } }), failure);
+    assert.throws(() => connectRootIdc(fixture.binary, agentArgs(), { connectImpl() { calls++; throw failure; } }), failure);
     assert.equal(calls, 1);
   });
 });
@@ -673,9 +765,11 @@ test('stream caps accept exactly 8 MiB stdout/1 MiB stderr and close on the firs
   });
 });
 
+// The service only accepts empty stdin, but the client must still bound whatever a
+// caller writes before it reaches the wire (root-helper Protocol covers the refusal).
 test('stdin and complete serialized request are byte-bounded to 65536 before socket write', async t => {
   await t.test('input exceeds cap', async t => {
-    const { request, socket, result } = connectionFixture(t, ['idc', '--process-action', 'check']);
+    const { request, socket, result } = connectionFixture(t, agentArgs('status'));
     socket.emit('connect');
     request.stdin.write(Buffer.alloc(65536, 0x61));
     request.stdin.end('汉');
@@ -685,10 +779,10 @@ test('stdin and complete serialized request are byte-bounded to 65536 before soc
     rootFailure(result.errors[0]);
   });
   await t.test('JSON overhead and escaping count toward wire limit', async t => {
-    const args = ['idc', '--process-action', 'check'];
+    const args = agentArgs('status');
     const { files, request, socket, result } = connectionFixture(t, args);
     const overhead = Buffer.byteLength(JSON.stringify({ schema_version: '1.0', args, stdin: '',
-      deadline: NOW + 15000, manifest_sha256: files.manifestHash() }) + '\n');
+      deadline: NOW + 35000, manifest_sha256: files.manifestHash() }) + '\n');
     socket.emit('connect');
     request.stdin.end('a'.repeat(65536 - overhead));
     await turn();
@@ -712,11 +806,11 @@ test('stdin and complete serialized request are byte-bounded to 65536 before soc
 });
 
 test('timeout/cancel close only sockets, emit one terminal close and clear timers without signals', async t => {
-  for (const args of [collectionArgs(), ['idc', '--process-action', 'terminate']]) await t.test(args[1], t => {
+  for (const action of ['status', 'ensure', 'disable']) await t.test(action, t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
-    const { request, socket, result } = connectionFixture(t, args);
-    const timeout = args[1] === '--profile' ? 35000 : 15000;
-    t.mock.timers.tick(timeout - 1);
+    const { request, socket, result } = connectionFixture(t, agentArgs(action));
+    // One unified 35 s budget: the retired 15 s process-action deadline is gone.
+    t.mock.timers.tick(35000 - 1);
     assert.deepEqual(result.codes, []);
     t.mock.timers.tick(1);
     assert.deepEqual(result.codes, [124]);
@@ -729,7 +823,7 @@ test('timeout/cancel close only sockets, emit one terminal close and clear timer
   });
   await t.test('cancel before connect/final input', t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
-    const { request, socket, result } = connectionFixture(t, ['idc', '--process-action', 'check']);
+    const { request, socket, result } = connectionFixture(t, agentArgs('ensure'));
     assert.equal(request.kill('SIGTERM'), true);
     assert.equal(request.kill(), true);
     socket.emit('connect');
@@ -740,87 +834,132 @@ test('timeout/cancel close only sockets, emit one terminal close and clear timer
     assert.deepEqual(socket.writes, []);
   });
   await t.test('stdin error does not expose private details', t => {
-    const { request, result } = connectionFixture(t, ['idc', '--process-action', 'check']);
+    const { request, result } = connectionFixture(t, agentArgs('disable'));
     request.stdin.emit('error', new Error('private input error'));
     assert.deepEqual(result.codes, [126]);
     rootFailure(result.errors[0]);
   });
 });
 
-test('controller startup defaults to service verification without connecting or starting a process', { skip: process.platform !== 'linux', timeout: 5000 }, async t => {
-  for (const kind of ['matching installation', 'missing helper', 'user-owned binary', 'missing socket', 'wrong UID']) {
+test('controller startup resolves the system sysak without root-service verification, connecting or spawning', { skip: process.platform !== 'linux', timeout: 5000 }, async t => {
+  for (const kind of ['matching root installation', 'missing helper', 'user-owned binary', 'missing socket', 'wrong UID',
+    'missing idc_inspect component', 'missing rules']) {
     await t.test(kind, async t => {
       const fixture = installationFixture(t);
       if (kind === 'missing helper') fixture.nodes.delete(HELPER);
       if (kind === 'user-owned binary') fixture.nodes.get(fixture.installedBinary).uid = UID;
       if (kind === 'missing socket') fixture.nodes.delete(SOCKET);
       if (kind === 'wrong UID') fixture.nodes.get(AUTH).content = Buffer.from('1001');
-      mockDefaultIo(t, fixture);
+      const system = systemSysakFixture({ component: kind !== 'missing idc_inspect component', rules: kind !== 'missing rules' });
+      mockCurrentUserInfo(t, fixture, system);
+      const savedBinary = process.env.SYSOM_SYSAK_BIN;
+      delete process.env.SYSOM_SYSAK_BIN;
+      t.after(() => { if (savedBinary !== undefined) process.env.SYSOM_SYSAK_BIN = savedBinary; });
       let closed = false;
-      const controller = await createIdcController({ bundleRoot: path.dirname(fixture.binary),
+      const controller = await createIdcController({ bundleRoot: path.dirname(fixture.binary), sysomConfig: null,
         startMockOpenApi: async () => ({ baseUrl: 'http://fixture.invalid', close: async () => { closed = true; } }),
         scheduler: { now: () => NOW, setTimeout: () => 1, clearTimeout() {} },
         spawnImpl: () => assert.fail('startup must never spawn'), killGroup: () => assert.fail('must not signal any group'),
       });
       t.after(() => controller.close());
-      assert.equal(controller.status().installed, kind === 'matching installation');
-      if (kind === 'matching installation') {
+      const installed = !['missing idc_inspect component', 'missing rules'].includes(kind);
+      assert.equal(controller.status().installed, installed);
+      assert.equal(controller.status().collector.command, 'idc_inspect');
+      assert.equal(controller.status().collector.schema_version, '1.1');
+      if (installed) {
         assert.equal(controller.status().phase, 'idle');
         assert.equal(controller.status().error, null);
-        fixture.nodes.delete(HELPER);
+        assert.equal(controller.status().collector.binary, SYSTEM_SYSAK);
+        assert.equal(controller.status().collector.source, 'system');
       } else {
         assert.equal(controller.status().phase, 'error');
-        rootFailure(controller.status().error);
+        assert.equal(controller.status().error.code, 'SYSAK_COMPONENT_MISSING');
+        assert.match(controller.status().error.message, /idc_inspect/);
       }
-      await assert.rejects(controller.snapshot(), rootFailure);
-      assert.equal(controller.status().error.code, 'ROOT_COLLECTOR_UNAVAILABLE');
+      // Local collection no longer depends on the root AgentSight-only service:
+      // its installation is never inspected, connected to or used as a fallback.
+      assert.deepEqual(fixture.inspected, []);
       await controller.close();
       assert.equal(closed, true);
     });
   }
 });
 
-test('default collection/check/terminate consumers use net.createConnection, never spawn, and send no UID/environment', { timeout: 5000 }, async t => {
-  for (const kind of ['collection', 'check', 'terminate']) await t.test(kind, async t => {
-    const targets = [{ pid: 900101, starttime: 1000 }];
+test('the remaining root consumer (AgentSight collection control) uses net.createConnection, never spawn, and sends no UID/environment', { timeout: 5000 }, async t => {
+  for (const action of ['status', 'ensure', 'disable']) await t.test(action, async t => {
     const fixture = consumerSocket(t, (request, socket) => {
-      if (kind === 'collection') socket.output('stdout', JSON.stringify(rawSnapshot(request.args[2], request.args[4])));
-      else {
-        assert.deepEqual(JSON.parse(request.stdin), { manager_pid: 990099, targets });
-        socket.output('stdout', JSON.stringify(processReply(kind, targets)));
-      }
+      assert.deepEqual(request.args, agentArgs(action));
+      assert.equal(request.stdin, '', 'collection control never carries a payload');
+      socket.output('stdout', JSON.stringify(collectionStatusReply(action)));
       socket.output('stderr', 'private diagnostic');
       socket.frame({ code: 0 });
     });
-    const requestId = randomUUID();
-    if (kind === 'collection') {
-      const result = await collectRaw(fixture.files.binary, 'resources', requestId, new AbortController().signal);
-      assert.deepEqual(result.raw, rawSnapshot('resources', requestId));
-      assert.equal(result.stderrBytes, Buffer.byteLength('private diagnostic'));
-    } else assert.deepEqual(await runProcessAction(fixture.files.binary, kind, targets, { managerPid: 990099 }), processReply(kind, targets).results);
+    const status = await controlAgentCollection(fixture.files.binary, action);
+    assert.equal(status.state, action === 'disable' ? 'disabled' : 'running');
+    assert.equal(status.enabled, action !== 'disable');
     assert.equal(fixture.calls.length, 1);
     const request = fixture.calls[0].request;
-    assert.deepEqual(request.args, kind === 'collection' ? collectionArgs(requestId) : ['idc', '--process-action', kind]);
-    assert.equal(request.deadline, NOW + (kind === 'collection' ? 35000 : 15000));
+    assert.equal(request.deadline, NOW + 35000);
+    assert.equal(request.schema_version, '1.0');
     assert.equal(Object.hasOwn(request, 'uid'), false);
     assert.equal(Object.hasOwn(request, 'env'), false);
     assert.equal(fixture.calls[0].socket.destroyed, true);
   });
 });
 
-test('controller snapshot and local process annotation use default socket consumers with mocked HTTP and no launch injection', { skip: process.platform !== 'linux', timeout: 5000 }, async t => {
-  const targets = [{ pid: 900101, starttime: 1000 }];
-  const fixture = consumerSocket(t, (request, socket) => {
-    if (request.args[1] === '--profile') {
-      const raw = rawSnapshot(request.args[2], request.args[4]);
-      raw.resources.processes = { status: 'ok', content: { samples: [{ processes: targets }] } };
-      socket.output('stdout', JSON.stringify(raw));
+test('collection/check/terminate consumers spawn the current-user sysak, never the root socket, and send no UID/environment', { timeout: 5000 }, async t => {
+  for (const kind of ['collection', 'check', 'terminate']) await t.test(kind, async t => {
+    const targets = [{ pid: 900101, starttime: 1000 }];
+    const fixture = installationFixture(t);
+    const system = systemSysakFixture();
+    mockCurrentUserInfo(t, fixture, system);
+    const requestId = randomUUID();
+    const spawn = sysakSpawnFixture(t, (child, call) => {
+      if (call.argv[1] === '--request-id') child.stdout.write(JSON.stringify(inspectRaw(requestId)));
+      else {
+        assert.deepEqual(JSON.parse(child.input()), { manager_pid: 990099, targets });
+        child.stdout.write(JSON.stringify(processReply(kind, targets)));
+      }
+      child.stderr.write('private diagnostic');
+      child.finish(0);
+    });
+    if (kind === 'collection') {
+      const result = await collectRaw(SYSTEM_SYSAK, requestId, new AbortController().signal,
+        { spawnImpl: spawn.spawnImpl, killGroup: spawn.killGroup });
+      assert.deepEqual(result.raw, inspectRaw(requestId));
+      assert.equal(result.stderrBytes, Buffer.byteLength('private diagnostic'));
     } else {
-      assert.deepEqual(request.args, ['idc', '--process-action', 'check']);
-      assert.deepEqual(JSON.parse(request.stdin), { manager_pid: process.pid, targets });
-      socket.output('stdout', JSON.stringify(processReply('check', targets)));
+      assert.deepEqual(await runProcessAction(SYSTEM_SYSAK, kind, targets,
+        { spawnImpl: spawn.spawnImpl, managerPid: 990099 }), processReply(kind, targets).results);
     }
-    socket.frame({ code: 0 });
+    assert.equal(spawn.calls.length, 1, 'one current-user invocation, no root fallback');
+    const call = spawn.calls[0];
+    assert.equal(call.file, SYSTEM_SYSAK);
+    assert.deepEqual(call.argv, kind === 'collection' ? inspectArgs(requestId) : processArgs(kind));
+    assert.equal(call.options.shell, false);
+    assert.equal(call.options.cwd, path.dirname(SYSTEM_SYSAK));
+    assert.deepEqual(call.options.stdio, kind === 'collection' ? ['ignore', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe']);
+    assert.deepEqual(Object.keys(call.options.env).sort(), ['LANG', 'PATH', 'PYTHONDONTWRITEBYTECODE']);
+    assert.deepEqual(fixture.inspected, [], 'current-user collection never verifies the root installation');
+    assert.deepEqual(spawn.kills, []);
+    assert.deepEqual(spawn.groups, []);
+  });
+});
+
+test('controller snapshot and local process annotation use current-user sysak doubles with mocked HTTP and never the root socket', { skip: process.platform !== 'linux', timeout: 5000 }, async t => {
+  const targets = [{ pid: 900101, starttime: 1000 }];
+  const files = installationFixture(t);
+  const system = systemSysakFixture();
+  mockCurrentUserInfo(t, files, system);
+  const spawn = sysakSpawnFixture(t, (child, call) => {
+    if (call.argv[1] === '--request-id') {
+      child.stdout.write(JSON.stringify(inspectRaw(call.argv[2], { process: { status: 'ok', top_cpu: targets } })));
+    } else {
+      assert.deepEqual(call.argv, processArgs('check'));
+      assert.deepEqual(JSON.parse(child.input()), { manager_pid: process.pid, targets });
+      child.stdout.write(JSON.stringify(processReply('check', targets)));
+    }
+    child.finish(0);
   });
   const state = { mode: 'collected', hasGpu: false, revision: 1, sampledAt: new Date(NOW).toISOString(),
     resources: Object.fromEntries(['cpu', 'energy', 'memory', 'disk', 'gpu'].map(id => [id, {
@@ -836,81 +975,120 @@ test('controller snapshot and local process annotation use default socket consum
     const body = JSON.parse(options.body);
     httpCalls.push(body);
     assert.equal(body.operation, 'snapshot');
+    assert.equal(body.schema_version, '1.1');
     assert.equal(body.raw_snapshot.request_id, body.request_id);
-    return { ok: true, text: async () => JSON.stringify({ schema_version: '1.0', request_id: body.request_id,
+    return { ok: true, text: async () => JSON.stringify({ schema_version: '1.1', request_id: body.request_id,
       task_id: randomUUID(), mode: 'mock', read_only: true, state,
       task: { simulated: false, status: 'completed' } }) };
   });
   let apiClosed = false;
-  const controller = await createIdcController({ bundleRoot: path.dirname(fixture.files.binary),
+  const controller = await createIdcController({ bundleRoot: path.dirname(files.binary), sysomConfig: null,
     startMockOpenApi: async () => ({ baseUrl: 'http://fixture.invalid', close: async () => { apiClosed = true; } }),
     scheduler: { now: () => NOW, setTimeout: () => 1, clearTimeout() {} },
+    spawnImpl: spawn.spawnImpl, killGroup: spawn.killGroup,
+    processActionImpl: (action, list) => runProcessAction(SYSTEM_SYSAK, action, list, { spawnImpl: spawn.spawnImpl }),
   });
   t.after(() => controller.close());
-  assert.equal(fixture.calls.length, 0, 'startup verification must not connect');
+  assert.equal(spawn.calls.length, 0, 'startup must not collect or connect');
   const result = await controller.snapshot();
   assert.equal(result.resources.cpu.rows[0].cleanable, true);
   assert.equal(result.resources.cpu.rows[0].defaultSelected, false);
   assert.match(result.resources.cpu.rows[0].effect, /整个进程.*SIGTERM/);
-  assert.equal(fixture.calls.length, 2, 'collection and check both use the default socket path');
+  assert.equal(spawn.calls.length, 2, 'collection and check both use the current-user sysak');
+  assert.deepEqual(spawn.calls.map(call => call.argv[1]), ['--request-id', '--process-action']);
   assert.equal(httpCalls.length, 1);
   assert.equal(controller.status().last_task.simulated, false);
   assert.deepEqual(await controller.snapshot(), result);
-  assert.equal(fixture.calls.length, 2, 'cache reads never reconnect or re-authorize');
-  assert(fixture.calls.every(call => call.socket.destroyed));
+  assert.equal(spawn.calls.length, 2, 'cache reads never re-collect or re-authorize');
+  assert.deepEqual(files.inspected, [], 'the root installation is never consulted');
+  assert.deepEqual(spawn.groups, []);
   await controller.close();
   assert.equal(apiClosed, true);
 });
 
-test('default consumers reject unavailable service, UID denial, connection failure/busy without fallback or retry', { timeout: 5000 }, async t => {
-  for (const kind of ['collection', 'check', 'terminate']) for (const failure of ['missing auth', 'UID denied', 'connection error', 126, 127, 75, 125]) {
+test('current-user consumers reject spawn failure, nonzero exit and oversized output without root fallback or retry', { timeout: 5000 }, async t => {
+  for (const kind of ['collection', 'check', 'terminate']) for (const failure of ['root service unavailable', 'root UID denied', 'spawn error', 'nonzero exit', 'oversized output']) {
     await t.test(`${kind}: ${failure}`, async t => {
-      const fixture = consumerSocket(t, (_request, socket) => {
-        if (failure === 'connection error') socket.emit('error', new Error('private socket failure'));
-        else socket.frame({ code: failure, error: failure === 75 ? 'ROOT_SERVICE_BUSY' :
-          failure === 125 ? 'COLLECTION_TOO_LARGE' : 'ROOT_COLLECTOR_UNAVAILABLE' });
+      const targets = [{ pid: 900101, starttime: 1000 }];
+      const fixture = installationFixture(t);
+      if (failure === 'root service unavailable') fixture.nodes.delete(AUTH);
+      if (failure === 'root UID denied') fixture.nodes.get(AUTH).content = Buffer.from('1001');
+      const system = systemSysakFixture();
+      mockCurrentUserInfo(t, fixture, system);
+      const requestId = randomUUID();
+      // A broken or unauthorized root service must neither block nor replace local collection.
+      const independent = ['root service unavailable', 'root UID denied'].includes(failure);
+      const spawn = sysakSpawnFixture(t, (child, call) => {
+        const collection = call.argv[1] === '--request-id';
+        if (independent) {
+          child.stdout.write(JSON.stringify(collection ? inspectRaw(requestId) : processReply(kind, targets)));
+          return child.finish(0);
+        }
+        if (failure === 'spawn error') return child.emit('error', new Error('private spawn failure'));
+        if (failure === 'nonzero exit') return child.finish(126);
+        child.stdout.write(Buffer.alloc(collection ? 8 * MiB + 1 : 65537, 0x61));
+        child.finish(0);
       });
-      if (failure === 'missing auth') fixture.files.nodes.delete(AUTH);
-      if (failure === 'UID denied') fixture.files.nodes.get(AUTH).content = Buffer.from('1001');
-      const pending = kind === 'collection' ? collectRaw(fixture.files.binary, 'resources', randomUUID(), new AbortController().signal,
-        { spawnImpl: () => assert.fail('service failures must never spawn'), killGroup: () => assert.fail('socket has no process group') }) :
-        runProcessAction(fixture.files.binary, kind, [{ pid: 900101, starttime: 1000 }], { spawnImpl: () => assert.fail('never retry as user') });
-      await assert.rejects(pending, error => {
-        if (['missing auth', 'UID denied', 'connection error'].includes(failure)) rootFailure(error);
-        else if (kind === 'collection') {
-          assert.equal(error.code, failure === 75 ? 'ROOT_SERVICE_BUSY' : failure === 125 ? 'COLLECTION_TOO_LARGE' : 'ROOT_COLLECTOR_UNAVAILABLE');
-          assert.equal(error.status, failure === 75 ? 503 : failure === 125 ? 413 : 403);
-          assert.equal(error.retryable, failure === 75);
-        } else assert.match(error.message, failure === 75 ? /服务忙/ : failure === 125 ? /进程操作不可用/ : /服务身份或组件校验失败/);
-        assert.doesNotMatch(error.message, /private|pkexec|sudo/);
-        return true;
-      });
-      assert.equal(fixture.calls.length, ['missing auth', 'UID denied'].includes(failure) ? 0 : 1, 'no fallback or retry');
+      const pending = kind === 'collection'
+        ? collectRaw(SYSTEM_SYSAK, requestId, new AbortController().signal, { spawnImpl: spawn.spawnImpl, killGroup: spawn.killGroup })
+        : runProcessAction(SYSTEM_SYSAK, kind, targets, { spawnImpl: spawn.spawnImpl, managerPid: 990099 });
+      if (independent) {
+        if (kind === 'collection') assert.deepEqual((await pending).raw, inspectRaw(requestId));
+        else assert.deepEqual(await pending, processReply(kind, targets).results);
+      } else {
+        await assert.rejects(pending, error => {
+          if (kind === 'collection') {
+            assert.equal(error.code, failure === 'spawn error' ? 'COLLECTOR_UNAVAILABLE' : failure === 'nonzero exit' ? 'COLLECTION_FAILED' : 'COLLECTION_TOO_LARGE');
+            assert.equal(error.status, failure === 'oversized output' ? 413 : 503);
+            assert.equal(error.retryable, failure === 'nonzero exit');
+          } else assert.match(error.message, failure === 'spawn error' ? /无法启动 sysAK 进程操作/ : failure === 'nonzero exit' ? /进程操作不可用/ : /超过限制/);
+          assert.doesNotMatch(error.message, /private|pkexec|sudo/);
+          return true;
+        });
+      }
+      assert.equal(spawn.calls.length, 1, 'no fallback or retry');
+      assert.deepEqual(fixture.inspected, [], 'the root installation is never consulted');
+      if (failure === 'oversized output') {
+        if (kind === 'collection') assert.deepEqual(spawn.groups, [[990099, 'SIGTERM']]);
+        else assert.deepEqual(spawn.kills, ['SIGTERM']);
+      } else {
+        assert.deepEqual(spawn.groups, []);
+        assert.deepEqual(spawn.kills, []);
+      }
     });
   }
 });
 
-test('default collectRaw cancellation/pre-abort/timeout closes socket without PID or production signals', { timeout: 5000 }, async t => {
+test('collectRaw cancellation/pre-abort/timeout signals only the fake current-user group, never the root socket', { timeout: 5000 }, async t => {
   for (const cause of ['cancel', 'timeout', 'pre-abort']) await t.test(cause, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
-    const fixture = consumerSocket(t);
+    const fixture = installationFixture(t);
+    const system = systemSysakFixture();
+    mockCurrentUserInfo(t, fixture, system);
+    const spawn = sysakSpawnFixture(t, () => {});
     const abort = new AbortController();
     if (cause === 'pre-abort') abort.abort();
-    const pending = collectRaw(fixture.files.binary, 'resources', randomUUID(), abort.signal,
-      { timeoutMs: 10, killGroup: () => assert.fail('socket request must never signal a process group') });
+    const pending = collectRaw(SYSTEM_SYSAK, randomUUID(), abort.signal,
+      { spawnImpl: spawn.spawnImpl, killGroup: spawn.killGroup, timeoutMs: 10 });
     const rejected = assert.rejects(pending, error => {
       assert.equal(error.code, cause === 'timeout' ? 'COLLECTION_TIMEOUT' : 'COLLECTION_CANCELLED');
       return true;
     });
     if (cause !== 'pre-abort') {
       await turn();
-      assert.equal(fixture.calls.length, 1);
+      assert.equal(spawn.calls.length, 1);
       if (cause === 'cancel') abort.abort();
       else t.mock.timers.tick(10);
+      assert.deepEqual(spawn.groups, [[990099, 'SIGTERM']], 'cancellation signals the current-user process group');
+      t.mock.timers.tick(1000);
+      assert.deepEqual(spawn.groups, [[990099, 'SIGTERM'], [990099, 'SIGKILL']], 'a stuck group is escalated to SIGKILL');
+      // collectRaw settles on the child's 'close' event, so let the fake group die first.
+      spawn.calls[0].child.finish(null);
     }
     await rejected;
-    if (cause === 'pre-abort') assert.equal(fixture.calls.length, 0);
-    else assert.equal(fixture.calls[0].socket.destroyed, true);
+    if (cause === 'pre-abort') assert.equal(spawn.calls.length, 0, 'a pre-aborted collection never spawns');
+    assert.deepEqual(spawn.kills, [], 'the fake group is signalled, never child.kill fallback');
+    assert.deepEqual(fixture.inspected, []);
     t.mock.timers.tick(100000);
     abort.abort();
   });

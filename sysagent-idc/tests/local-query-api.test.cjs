@@ -5,9 +5,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const { startLocalQueryApi } = require('../electron/local-query-api.cjs');
 const { createIdcController } = require('../electron/idc-controller.cjs');
 const { startMockOpenApi, summarizeHealth, buildHealthReport } = require('../electron/generated/openapi.cjs');
+const { rawSnapshot, sysakInstall } = require('./fixtures.cjs');
 
 function state() {
   return { mode: 'collected', hasGpu: false, revision: 7, sampledAt: '2026-11-11T10:00:00Z',
@@ -32,7 +35,7 @@ function request(endpoint, route, options = {}) {
 async function fixture(t, view = { status: { device_id: 'fixture' }, state: null, agent: null, tasks: [] }) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sysom-query-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  view.status = { schema_version: '1.0', mode: 'mock', read_only: true, installed: false, enabled: true,
+  view.status = { schema_version: '1.1', mode: 'mock', read_only: true, installed: false, enabled: true,
     phase: 'error', api_version: '1.0', last_task: null, inspection_interval_minutes: 5,
     next_inspection_at: null, error: null, ...view.status };
   let calls = 0;
@@ -214,11 +217,15 @@ test('controller queryView and public GET never call collection, and service fol
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sysom-query-controller-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   let launches = 0;
-  const controller = await createIdcController({ bundleRoot: path.join(root, 'not-installed'), startMockOpenApi,
-    launchImpl: () => { launches++; throw new Error('GET must not collect'); },
+  // A missing launcher override keeps resolution deterministic even when the host has sysak installed.
+  const controller = await createIdcController({ sysakBinary: path.join(root, 'not-installed', 'sysak'),
+    bundleRoot: path.join(root, 'not-installed'), sysomConfig: null, startMockOpenApi,
+    spawnImpl: () => { launches++; throw new Error('GET must not collect'); },
     queryApi: { discoveryDirectory: path.join(root, 'local-api'), hostKind: 'test', summarizeHealth, buildHealthReport } });
   t.after(() => controller.close());
   const view = controller.queryView();
+  assert.equal(view.status.installed, false);
+  assert.equal(view.status.error.code, 'SYSAK_NOT_FOUND');
   assert.equal(view.state, null);
   assert.equal(view.agent, null);
   assert.deepEqual(view.tasks, []);
@@ -236,4 +243,68 @@ test('controller queryView and public GET never call collection, and service fol
   assert.equal(controller.queryView().state, null);
   await controller.close();
   assert.equal(fs.existsSync(file), false);
+});
+
+test('a real collected status, snapshot, report and task list match the served query contract', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sysom-query-collected-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const install = sysakInstall(t);
+  const checks = [];
+  const controller = await createIdcController({
+    sysakBinary: install.binary, sysomConfig: null, startMockOpenApi,
+    spawnImpl(binary, argv) {
+      const child = new EventEmitter();
+      child.pid = 900001;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => assert.fail('the query fixture must never signal a child');
+      setImmediate(() => {
+        child.stderr.end();
+        child.stdout.end(JSON.stringify(rawSnapshot(argv[2])));
+        setImmediate(() => child.emit('close', 0));
+      });
+      return child;
+    },
+    processActionImpl: async (action, targets) => {
+      checks.push({ action, targets });
+      return targets.map(() => ({ status: 'ineligible', eligible: false, reason: 'fixture: 身份无法核验' }));
+    },
+    queryApi: { discoveryDirectory: path.join(root, 'local-api'), hostKind: 'test', summarizeHealth, buildHealthReport },
+  });
+  t.after(() => controller.close());
+  assert.equal((await controller.snapshot()).mode, 'collected');
+  const view = controller.queryView();
+  const endpoint = JSON.parse(fs.readFileSync(path.join(root, 'local-api', `${view.status.query_api.instance_id}.json`), 'utf8'));
+  const contract = (await request(endpoint, '/api/v1/openapi.json')).body;
+  for (const route of ['/api/v1/status', '/api/v1/capabilities', '/api/v1/snapshot', '/api/v1/summary', '/api/v1/report']) {
+    const response = await request(endpoint, route);
+    assert.equal(response.status, 200, route);
+    const schema = contract.paths[route].get.responses['200'].content['application/json'].schema;
+    assert.equal(schemaMatches(response.body, schema, contract), true, route);
+  }
+  const status = (await request(endpoint, '/api/v1/status')).body.data;
+  assert.equal(status.schema_version, '1.1');
+  assert.equal(status.mode, 'mock');
+  assert.equal(status.collector.command, 'idc_inspect');
+  assert.equal(status.collector.binary, install.binary);
+  assert.equal(status.collection.status, 'ok');
+  assert.equal(status.cloud_inspection, null);
+  assert.equal(status.last_task.uploaded, false);
+  assert.equal(status.last_task.profile, 'inspection');
+  const tasks = await request(endpoint, '/api/v1/datasets/tasks');
+  assert.equal(tasks.status, 200);
+  assert.equal(schemaMatches(tasks.body, contract.components.schemas.DatasetList, contract), true);
+  assert.equal(tasks.body.items.length, 1);
+  assert.equal(tasks.body.items[0].uploaded, false);
+  assert.equal(tasks.body.items[0].simulated, false);
+  assert.equal(tasks.body.items[0].inspection_id, undefined);
+  assert.equal(schemaMatches(view, contract.components.schemas.QueryView, contract), true);
+  for (const { action, targets } of checks) {
+    assert.equal(action, 'check');
+    for (const target of targets) {
+      assert.ok(Number.isSafeInteger(target.pid) && target.pid > 1);
+      assert.ok(Number.isSafeInteger(target.starttime) && target.starttime >= 0);
+    }
+  }
+  assert.equal(JSON.stringify(tasks.body).includes(endpoint.token), false);
 });
