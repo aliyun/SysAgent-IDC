@@ -1,7 +1,8 @@
 # SysAgent 管家：本地 IDC 采集、前后端协调与 OpenAPI 详细设计
 
 - 文档版本：2.0。
-- 2026-11-13 名称更新：当前产品为 SysAgent 0.2.17，桌面目录为 `sysagent-idc`，IDE 目录为 `sysagent-ide-extension`，安装目录为 `/opt/SysAgent管家`，扩展标识为 `sysagent-local.sysagent-ide`。0.2.17 双端构建成功，隔离 AppImage 原生验收 30/30、IDE 原生验收 24/24 通过；全量回归及最终发布包校验结果见根 README，不沿用历史数量或哈希。本文件其余带日期的设计与验收描述均保留为历史阶段，段落中的“当前／本次／本轮”指当时阶段，不指 0.2.17；旧产物记录不作为当前安装入口，当前交付与安装以根 README 为准。源码目录按改名后的路径引用，历史文件名与包元数据保留原名，不表示历史产物被重命名。既有实际类 `SysOMOpenAPI`、`sysom-openapi`、`window.sysomDesktop`、`SYSOM_*`、`sysom://` 和 systemd/socket/数据路径仍为实际运行标识，不能按展示名称改写。
+- 2026-11-16 迁移增量：当前产品为 **SysAgent 0.2.18**，资源采集改为当前用户直接调用系统 sysak `idc_inspect`（schema 1.1），并接入 SysOM 云端巡检上传与报告；root 服务只保留 AgentSight 采集控制。权威描述见下方“0.2.18 迁移增量”一节，该节替代正文中“所有 sysAK 均经固定 root helper”“当前没有实际远端接入或外部上传”“info.version=1.1.0 / schema_version=1.0”等旧阶段结论。历史段落中指向 `release/` 批次清单与旧工作区绝对路径（`file:///path/to/workspace/...`）的链接是历史引用，目标当前不存在，不代表可获取的产物或源码位置。
+- 2026-11-13 名称更新：产品更名为 SysAgent，桌面目录为 `sysagent-idc`，IDE 目录为 `sysagent-ide-extension`，安装目录为 `/opt/SysAgent管家`，扩展标识为 `sysagent-local.sysagent-ide`。当时 0.2.17 双端构建成功，隔离 AppImage 原生验收 30/30、IDE 原生验收 24/24 通过；这些数量绑定 0.2.17 发布包，不是 0.2.18 结果，也不沿用历史哈希。本文件其余带日期的设计与验收描述均保留为历史阶段，段落中的“当前／本次／本轮”指当时阶段，不指 0.2.18；旧产物记录不作为当前安装入口，当前交付与安装以根 README 为准。源码目录按改名后的路径引用，历史文件名与包元数据保留原名，不表示历史产物被重命名。既有实际类 `SysOMOpenAPI`、`sysom-openapi`、`window.sysomDesktop`、`SYSOM_*`、`sysom://` 和 systemd/socket/数据路径仍为实际运行标识，不能按展示名称改写。
 - 常驻服务增量（2026-11-10，0.2.12 已本地生成并由用户安装；0.2.13 修复阶段）：参考 sysAK confmon 的 `Type=simple` / `Restart=on-failure` 生命周期，新增 `sysom-idc.service` 常驻 root 服务。普通桌面/IDE 经 `/run/sysom-idc/idc.sock` 请求固定安装的 `sysak idc`，不再执行 sudo/pkexec；顶层 `resource_anomaly` / `memgraph` 请求拒绝，诊断仍由 IDC 内部固定调用。安装时通过 `SYSOM_IDC_UID` 或 `SUDO_UID` 记录单一授权用户，服务在读取请求前用 `SO_PEERCRED` 和普通进程凭据验证；缺授权配置不启动服务，不猜测用户、不放开免密策略。请求绑定安装 manifest 摘要、35/15 秒期限、8 MiB stdout / 1 MiB stderr 限制；断连/取消只回收本次采集进程组。进程操作绑定 socket peer PID/starttime，按用户追加要求允许其他用户与 root 的非关键目标；保护 PID 1、内核线程、系统/用户服务、服务与 manager 祖先和 manager 子树，无法核实 systemd scope 时拒绝。目标凭据及 cgroup 在信号前再次比对；pidfd SIGTERM、二次确认及 revision 一次性 token 保留。固定安装目录与 bundle 全文件信任校验不变，Electron/IDE 和用户可写代码不提权。
 - 当前服务增量的权威设计见下方“常驻服务源码增量”；其余 0.2.11 构建、验收、pkexec/原 caller-only 描述均为已冻结发行阶段的证据，不是服务增量的实际安装验收；0.2.11 的三包、JSON、SHA256 和历史结果不改写。本次未执行系统安装、启动 root 服务、管理员授权或生产进程处置。服务增量验证结果另列，不能沿用 991/107 或旧 unavailable 验收数字。
 - 整理日期：2026-11-10。
@@ -9,8 +10,55 @@
 - 当前 0.2.11 构建阶段（2026-11-10，本地归档及桌面、Chrome、真实 IDE unavailable 验收通过）：根包、子包及 lockfile 已同步 **0.2.11**，版本一致性校验通过。**所有 SysAgent/IDE 发起的 sysAK 命令统一走固定 root helper，普通 Electron/IDE 不提权，不执行用户可写代码为 root，不自动普通用户回退。** IDC 内存诊断直接调用原生 `memgraph.py --graph --jsonstdout`（无 `--idc`），保留默认插件及额外扫描，不再宣称 proc-only/read-only 安全 profile。三个命令 `idc/resource_anomaly/memgraph`，原生 Makefile 16 模块加 resource_anomaly 2 模块，共 **18 模块、23 个必需组件文件，另加 manifest 共 24 文件**；helper 是 bundle 外的独立安装资源。confscan 及配置保持移除，`configuration: {}` 仅为 API 兼容容器。原 confscan 三处修改独立 stash 并恢复 HEAD；原生 memgraph 7 路径修改已 stash（`13bca2d4e2994a4274b103ad89aca0ee0fb40e05`）并恢复 HEAD，native 目录 git diff 为 0，适配在 IDC/管家侧。**两个开发 bundle 的 23 必需文件及 manifest 校验通过；桌面 build、直接 electron-builder 打包及插件 build/typecheck/package 均 exit 0，0.2.11 deb/AppImage/VSIX 已构建并存在。本阶段 Node/Python 回归通过（详见 16.1）；本地归档及桌面、Chrome、真实 IDE unavailable 验收通过。未实际安装/系统授权/发布，也未加入 polkit passwordless policy；本阶段证据单列于 16.1、17.4，不与 pre-root 历史累计。**
 - 0.2.10 历史验收：桌面完整 Node 测试 713/713、构建、三包静态 12 阶段校验通过；解包 deb 原生 Electron 实测 5 项、插件真实 Chrome 验收 12 项、最终解包 VSIX 在隔离 VS Code 1.145.2 的 4 项验收通过。实际 IDE 中选择/取消、旧 token 拒绝、仅自建临时 WorkBuddy 确认 SIGTERM、刷新与 history 均通过；两端真实采集模式无 Session 操作控件，未知指标不冒充正常。SHA256 已生成并复核。
 - 版本边界：0.2.10 及旧交付的版本、功能、28/21 文件清单、大小、链接、哈希和验收记录均冻结保留；0.2.9 不包含后续 39 键与 `--fd-usage`。除第 16.1 节本阶段单列回归外，正文沿用的“已验证/通过”仅指历史源码或交付时场景，不证明 root 安装/授权黄金路径已成功。pre-root confscan 移除阶段的 **614/614、69/69、Chrome 12 项**不改为新合计。此前当前章节中的普通用户执行禁令、10 文件/五模块、`memgraph_idc`、安全 profile 和原生 memgraph 暂未实现描述均由本阶段替代；带日期的历史段落只说明当时边界。当前与历史证据分别见 16.1、17.4。
-- 适用项目：`sysom_idc/sysagent-idc`、`sysom_idc/sysagent-ide-extension`；本地采集器位于 sysAK `source/tools/detect/generic/idc`。IDE 包需 Linux x64、系统 Python 3 和兼容 VS Code API 1.85+ 的本地扩展宿主；不表示 Qoder Desktop 独立 App 支持 VSIX。
+- 适用项目：`sysagent-idc`、`sysagent-ide-extension`（历史段落中的 `sysom_idc/` 前缀是改名前路径）；本地采集器位于 sysAK `source/tools/detect/generic/idc_inspect`，旧 `idc` 目标已合并移除。IDE 包需 Linux x64、系统 Python 3 和兼容 VS Code API 1.85+ 的本地扩展宿主；不表示 Qoder Desktop 独立 App 支持 VSIX。
 - 本阶段未执行真实系统安装/升级/卸载、系统管理员授权、用户 IDE 安装、AppImage FUSE 启动、生产进程处置、sysAK 全量编译、上传发布或 commit/push；仅实现固定 sysAK root 执行链，不等于已运行 root 黄金路径。远端 OpenAPI 仍只读；可信 Session、文件清理及自动修复未实现。此次文档更新不运行测试，不读取/输出凭据或仓库配置，不扩大上述边界。
+
+## 0.2.18 迁移增量（2026-11-16）：系统 sysak 采集与 SysOM 云端巡检
+
+本节是当前源码的权威描述，替代下文历史阶段中与之冲突的结论；带日期的历史段落不改写。
+
+### 采集与权限边界
+
+- 采集命令统一为 `sysak idc_inspect --request-id <UUID> -o -`，信封 `schema_version = "1.1"`、`collection.profile = "inspection"`。旧 `sysak idc --profile {resources,inspection}` 与独立 `idc` 目标已合并移除；`idc_inspect` 保留 `--profile`、`--process-action` 兼容入口。
+- **资源采集与进程操作以当前用户身份直接 spawn 系统 sysak**，不再经 root helper。解析顺序：控制器 `sysakBinary` → `SYSOM_SYSAK_BIN` → `/usr/bin/sysak` → `/usr/local/bin/sysak` → `PATH` 各目录；组件目录取二进制 realpath 同目录的 `.sysak_components/`，否则 `/usr/local/sysak/.sysak_components/`。启动前要求可读 `tools/idc_inspect` 与匹配规则行，缺失即拒绝，以拦截 sysAK 的联网组件下载。错误码 `UNSUPPORTED_PLATFORM`／`SYSAK_NOT_FOUND`／`SYSAK_COMPONENT_MISSING`；`status.collector.source` 为 `override` 或 `system`。
+- 权限边界随之变为**当前用户自身进程**：sysAK 对 root 或其他用户目标返回 `permission_denied`（原因 `root_or_other_user`），不再提供历史阶段的跨用户 ordinary 目标放行。进程操作走 `idc_inspect --process-action check|terminate`，stdin `{manager_pid, targets}`，回复 `schema_version = "1.0"`，15 秒超时、64 KiB stdout 上限，按 PID+starttime 复核身份；状态为 eligible/protected/permission_denied/stale/gone/unsupported（terminate 对应 signalled/…）。
+- root 辅助服务 `sysom-idc.service` 与 `build/sysak-root-runner.py` **只接受 AgentSight 采集控制**（argv `idc --agent-collection {status|ensure|disable}`，35 秒期限），历史阶段的 resources/inspection/check/terminate 放行已删除。包内 `resources/sysak/` bundle 仍随 deb 与 VSIX 交付并通过安装校验，但只作为该控制链路的 `bundleRoot`。
+- 采集外层超时 45 秒（sysAK 内部预算 24 秒、硬超时 30 秒），原始 stdout 上限 8 MiB；sysAK 启动器会把组件诊断混入 stdout，因此只提取首个完整 JSON 对象。
+- schema 1.1 相对 1.0 的新增：进程与 FD 排行携带 `starttime`、`process.top_rss` 排行、RAPL 能耗段、GPU `uuid`；`status.collection.sections[{name,status,reason}]` 逐段说明覆盖与受限原因。
+
+### 云端巡检链路（步骤 1–5）
+
+| 步骤 | 执行方 | 接口／动作 |
+| --- | --- | --- |
+| 1 | sysAK | `CreateHostInspectionUploadUrl`：POST `/api/v1/inspectionAgent/createHostInspectionUploadUrl` |
+| 2 | sysAK | PUT 预签名对象，上传本次采集报告 |
+| 3 | sysAK | `SubmitHostInspection`：POST `/api/v1/inspectionAgent/submitHostInspection?inspectionId=` |
+| 4 | 云端 | 后端分析并生成报告 |
+| 5 | 桌面／IDE | `GetHostInspection` 轮询任务，终态后 `GetInspectionReport` 取报告正文 |
+
+- 模式门控：`loadSysomConfig()` 需要 `SYSOM_POP_ENDPOINT` + `SYSOM_ACCESS_KEY_ID` + `SYSOM_ACCESS_KEY_SECRET`；可选 `SYSOM_SECURITY_TOKEN`、`SYSOM_REGION_ID`（默认 `cn-hangzhou`）、`SYSOM_DEVICE_ID`。`SYSOM_IDC_UPLOAD=0|false|no|off` 强制关闭。`status.mode = config ? 'pre' : 'mock'`，`mock` 只是未配置凭据的本地部署标签，不代表模拟指标。
+- 子进程环境基线为 `PATH`／`LANG=C.UTF-8`／`PYTHONDONTWRITEBYTECODE=1`；`SYSOM_*` 白名单**只在 pre 模式**传入 sysAK，凭据不写入源码、界面或日志。
+- 上传成功后 sysAK 把主报告 `request_id` 覆盖为 32 位十六进制 `inspection_id`（`/^[0-9a-f]{32}$/i`），控制器据此 `startCloudPoll`：间隔 3 秒、最长 120 秒；终态 `completed`／`partial_completed`／`failed`／`expired`／`cancelled`，可重试 5xx 退避，取消记 499、超时记 504。任务字段 `uploaded: !!inspectionId`，`inspection_id` 条件出现。
+- 上传失败回退本地 UUID，`recordUploadFailure` 解析 stderr 中以 `idc_inspect: upload` 开头的行，置 `cloud_inspection.error.code = 'UploadFailed'`、消息“上传失败：…；本次仅本地采集”，本地结果照常展示。新采集会取代旧轮询（AbortController + 世代守卫）；云端结果只存内存，无历史报告库。
+- 报告正文经 `{code,data,message}` 信封约束，`code ≠ Success` 映射 502；契约只约束信封，项级字段随后端演进。前端 `CloudReport.tsx` 消费 `itemSummaries`／`summary`／`scope`／`name`／`reportId`，首页在有云端报告时改显云端结论并让“体检报告”打开云端弹窗。**云端级别不是本机评分**，二者不可互相替代。
+
+### 契约与查询接口
+
+- 展示解析仍 POST 到进程内回环 `/openapi/v1/collections`，两种模式都执行；内部契约 [openapi-contract.json](../sysagent-idc/openapi-contract.json) 的 `info.version` 为 **1.3.0**，采集 schema **1.1**、Agent 会话 schema **1.0**。历史正文中的 `info.version=1.1.0`／`schema_version=1.0` 属旧阶段。
+- 公共只读查询契约 `/api/v1/openapi.json` 的 `info.version` 为 **1.0**，其中 `Status.schema_version` 为 **1.1**、`mode` 枚举 `mock|pre`，新增 `collector`、`collection`、`cloud_inspection`（可空，字段全部必需，report 只约束信封）。GET 不触发采集、上传或轮询。`RESOURCE_IDS` 为 `cpu/energy/memory/disk/gpu`。
+- 开发／预览网页通过 `demo-api.ts` 挂载**真实控制器**的 `/api/idc` 路由（`configureServer` 与 `configurePreviewServer` 都挂载），旧 `/api/demo` 已不再注册；因此开发网页不是隔离演示环境，配置凭据时会真实上传。
+
+### 构建、打包与已知缺口
+
+- 根入口 `scripts/build.mjs` 生成三个 deb（主 SysAgent、官方未修改 GX 0.6.5-2、AgentSight runtime 0.16.0）与 VSIX，不生成 AppImage；主 deb **不依赖也不安装 sysAK 软件包**，资源采集另需系统 sysak。云端 SDK 以 `file:vendor/alicloud-sysom20231230-3.3.2.tgz` 引入。
+- **已知构建缺口：** `vendor/sysak/linux-x64/` 仍是旧四命令包（`idc/resource_anomaly/memgraph/ai`），而 `prepare-sysak.cjs` 与 deb postinst 都要求 `idc_inspect`，因此原生构建与 IDE 构建在准备 bundle 时失败（`Missing idc_inspect rule with python-dep{python3}`），只有 `build:web` 不受影响。修复需替换 vendor 输入并同步 manifest，详见[打包文档](./PACKAGING.md)。
+- **AgentSight 采集控制尚未适配：** 控制器与 root 放行清单仍使用 `sysak idc --agent-collection`，而合并后的 sysAK 只有 `idc_inspect` 且无该参数（旧 vendor `idc` 组件同样不含），这条链路对当前 sysAK 不可用，本次未验证。
+
+### 本次验证范围
+
+桌面 `npm run build` 退出 0；`sysom-client` 与 `idc-controller` 定向回归 220/220 通过（17 + 203）。经用户显式授权的预发全链路实测走通步骤 1–5：`inspection_id=e2638868b4314a6c811e53e99ce65237`，终态 `partial_completed` 100%，`reportId=inspection-199ef386-18e2-4ccf-9045-83f50d2709d9`，`reportStatus=Success`，总体级别 Critical，10 项中 5 项异常、1 实例中 1 异常；采集分项含 energy `not_supported`、gpu `no_nvidia_smi`、log `permission_denied`、config `total_json_limit`，排行行携带 `starttime`。隔离端口 5174 的开发网页核对了云端结论段落、报告弹窗与刷新文案。
+
+本次**未重新安装软件、未重跑完整发布包构建**（vendor 缺口），应用全量测试仍有两项已知环境问题（`health-score` 缺参考夹具、`sysak-package` 15 s 超时偶发），因此不声称全量通过；不沿用 991/107、1085、30/30、24/24 等历史数量或哈希。预发实测需显式授权与凭据，不属于默认回归。
 
 ## 常驻服务源码增量（2026-11-10，0.2.12 与 0.2.13）
 

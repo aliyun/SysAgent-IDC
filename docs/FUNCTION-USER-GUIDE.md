@@ -1,12 +1,12 @@
 # SysAgent 管家功能与使用指南
 
-**适用范围：SysAgent 0.2.17 当前源码 · 独立 AgentSight 0.16.0 · 整理日期：2026-11-13**
+**适用范围：SysAgent 0.2.18 当前源码 · 独立 AgentSight 0.16.0 · 整理日期：2026-11-16**
 
 面向第一次使用管家的用户，以及希望让脚本、其他应用查询管家数据的开发者。[打开浏览器阅读版](./FUNCTION-USER-GUIDE.html)；复制文档时请同时保留 `assets/user-guide/` 配图目录。
 
 > **先分清三件事：** 有页面，不等于已有真实后端；请求成功，不等于设备或业务正常；源码已实现，不等于正在运行的旧安装包已更新。
 >
-> 本文配图来自改名前 0.2.15 React 界面的隔离浏览器运行，不是设计稿；保留原始说明性截图，画面中的 SysOM 名称与旧时间格式不代表 0.2.17 的显示。资源、GPU、Agent 报告使用人工构造的说明性证据；设备、日志、部署和 GPU 事件页面含内置 Demo。截图下方均有标注，不代表这台机器的实测结果，也没有执行真实采集、结束进程、安装或模型调用。桌面浮窗与 IDE 外壳按当前实现说明；配图不替代本批次独立的原生验收，具体范围见“验证范围说明”。
+> 本文配图来自改名前 0.2.15 React 界面的隔离浏览器运行，不是设计稿；保留原始说明性截图，画面中的 SysOM 名称与旧时间格式不代表 0.2.18 的显示。资源、GPU、Agent 报告使用人工构造的说明性证据；设备、日志、部署和 GPU 事件页面含内置 Demo。截图下方均有标注，不代表这台机器的实测结果，也没有执行真实采集、结束进程、安装或模型调用。桌面浮窗与 IDE 外壳按当前实现说明；配图不替代本批次独立的原生验收，具体范围见“验证范围说明”。0.2.18 新增的云端巡检结论与云端报告弹窗没有配图，按文字说明理解。
 
 ## 阅读路线
 
@@ -23,7 +23,7 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 
 | 模块 | 主要回答的问题 | 当前能力概况 |
 | --- | --- | --- |
-| 体检首页 | 本机资源是否紧张？哪些检查需要关注？ | 真实资源、部分体检、评分、报告与巡检配置 |
+| 体检首页 | 本机资源是否紧张？哪些检查需要关注？ | 真实资源、部分体检、评分、报告与巡检配置；配置 SysOM 凭据后另有云端巡检结论与云端报告 |
 | 资源详情 | 谁占用 CPU、内存或产生磁盘 I/O？ | 已采集进程 Top10、Agent 筛选、受控进程结束 |
 | 设备管理 | 能否查看和切换设备？ | 本机部分指标真实；远程设备与接入流程为演示 |
 | GPU 诊断 | 卡上有什么指标？是否有异常证据？ | 本机逐卡资源、按需原生 AI 检查、部分作业证据；事件案例为演示 |
@@ -41,7 +41,7 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 
 ![双端与证据链结构](./assets/user-guide/architecture.svg)
 
-**图 1：结构图。** 外部程序只读管家缓存；内部分析接口、系统采集 socket 和公共查询 HTTP 是不同边界，不可混用凭据。
+**图 1：结构图。** 外部程序只读管家缓存；内部分析接口、AgentSight 采集控制 socket 和公共查询 HTTP 是不同边界，不可混用凭据。0.2.18 的资源采集与进程操作由当前用户直接调用系统 sysak，不再经 root socket；图中该边界现仅用于 AgentSight 采集控制。
 
 ## 2. 首次打开：先确认服务，再看数据
 
@@ -50,7 +50,9 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 当前发布主要面向 Linux x86_64 图形桌面，README 要求 glibc 2.38+，并说明管理员安装、systemd、Python 与 IDE 版本条件。建议新用户按 README 的离线包安装入口操作，而不是从源码目录找脚本尝试。
 
 - 日常启动桌面和 IDE 使用普通用户，**不要用 sudo 启动 GUI**。
-- 系统资源需要安装且授权当前用户的 sysAK IDC 服务。只复制 AppImage／VSIX 不会自动安装它。
+- 系统资源采集需要**本机已安装 sysak**，且其组件目录含 `idc_inspect`（当前用户可执行）。管家按 `SYSOM_SYSAK_BIN` → `/usr/bin/sysak` → `/usr/local/bin/sysak` → `PATH` 查找；找不到报“未找到已安装的 sysAK”，找到但缺组件报“缺少 idc_inspect 组件”，两种情况都不会联网下载组件。安装 SysAgent 的 deb 不会替你安装 sysak。
+- 包内仍附带一份 sysAK bundle 并通过安装校验，但当前只用于 AgentSight 采集控制，不是资源采集的二进制来源。root 服务 `sysom-idc.service` 也只承担这一项职责，不再是资源采集的前提。
+- 云端巡检结论需要另行提供 SysOM 凭据（见第 3 节）；未配置时只有本地结果，这不是故障。
 - Agent 诊断依赖独立 AgentSight 配套件或已经运行的明确配置服务；不是可选 Python FastAPI 骨架。
 - 本文没有执行安装、修改服务、修改权限或升级软件。
 
@@ -75,10 +77,12 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 
 **图 2：当前界面的缺服务状态示例。** 没有资源证据时，不应生成假的评分、进程排行或“正常”结果。
 
-- 看到“整体数据暂不可用”，先读原因，再核对管理员安装和用户授权。
+- 看到“整体数据暂不可用”，先读原因，再核对 sysak 是否安装、组件是否含 `idc_inspect`、当前用户是否有权限读取对应证据。
+- 常见原因文案：`未找到已安装的 sysAK，请先安装 sysak 软件包后重试`（未安装或不在解析路径）、`sysAK 已安装但缺少 idc_inspect 组件…`（组件缺失，管家不会联网下载）、`本地 sysAK 采集目前仅支持 Linux`（非 Linux 宿主）。
 - 处理服务问题后使用“重试加载”。不要把不可用理解为 CPU、内存或 GPU 为 0。
 - 资源服务与 AgentSight 是独立链路：系统资源不可用时，Agent 报告仍可能可用，反之亦然。
 - 刷新失败而保留的旧报告，应按**旧采样时间**解读，不当作本次结果。
+- 刷新成功的提示是“资源快照与诊断结论已刷新”；它表示本次快照与本地诊断结论已更新，不表示所有深度检查或云端分析都已重新运行。
 
 ![基本使用流程](./assets/user-guide/usage-flow.svg)
 
@@ -93,7 +97,7 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 ### 3.1 首页从上到下看什么
 
 1. **本机健康中心：** 当前页面对象；其他设备的静态名称不要当作本机硬件事实。
-2. **分数与颜色：** 表示当前可评分证据的汇总；不是全机安全认证，也不是模型能力分数。
+2. **分数与颜色：** 表示当前可评分证据的汇总；不是全机安全认证，也不是模型能力分数。配置 SysOM 凭据且云端报告已返回时，标题下的段落改为**云端巡检结论**（后端级别，不是本机分数），见 3.6。
 3. **重要异常、其他异常、尚无定论：** 区分确定的异常和缺少结论的项。
 4. **系统资源卡片：** 当前占用、实测量、采样时间和详情入口。
 5. **体检项目：** 各项结论、受限原因和已有证据。
@@ -103,9 +107,9 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 
 | 按钮 | 做什么 | 应当怎样理解输出 |
 | --- | --- | --- |
-| 刷新整体数据 | 更新资源快照 | 更新资源不表示所有深度诊断都已重新运行 |
+| 刷新整体数据 | 更新资源快照与本地诊断结论，成功提示“资源快照与诊断结论已刷新” | 更新资源不表示所有深度诊断都已重新运行；配置凭据时同一次采集会由 sysAK 上传云端，云端分析异步完成 |
 | 重新体检 | 运行既有体检链路，解析结果后更新展示 | 等待完成，检查各项来源和覆盖；失败不等于正常 |
-| 体检报告 | 展示并导出当前报告 | 使用当前已有快照，不是历史报告库 |
+| 体检报告 | 已有云端报告时打开**云端巡检报告**弹窗，否则打开本地报告 | 使用当前已有快照或本次云端报告，不是历史报告库 |
 
 “一键优化”主要属于 Demo 分支；真实采集模式不提供一键自动修复。实际进程结束是独立、需要确认的操作，见第 4 节。
 
@@ -160,6 +164,29 @@ SysAgent 管家是一套本机运维与诊断界面：先把设备资源、进�
 | 已尝试 · 不可用 | 检查通道未取得可用数据 | 核对服务、权限、工具和硬件 |
 
 当前根分区、FD 与内存检查已有链路，但目录扫描范围、进程数量、插件或权限可能限制覆盖。独立 Agent 管家可用，**不等于首页“Agent 状态”检查项已实现**；首页日志、网络、I/O 等项仍有待接入部分。
+
+### 3.6 云端巡检：什么时候有结论，怎样读
+
+云端巡检是**可选链路**，默认不开启。只有同时提供 `SYSOM_POP_ENDPOINT`、`SYSOM_ACCESS_KEY_ID`、`SYSOM_ACCESS_KEY_SECRET` 三个环境变量时，管家才进入预发模式（查询接口 `status.mode` 为 `pre`）；可选 `SYSOM_SECURITY_TOKEN`、`SYSOM_REGION_ID`（默认 `cn-hangzhou`）、`SYSOM_DEVICE_ID`。设置 `SYSOM_IDC_UPLOAD=0|false|no|off` 可强制关闭上传。凭据只经环境变量提供，不写入源码、界面或日志；未配置时界面只有本地结果，这不是故障。
+
+链路分五步，前四步由 sysAK 完成，第五步由管家完成：
+
+| 步骤 | 谁执行 | 做什么 |
+| --- | --- | --- |
+| 1 | sysAK | `CreateHostInspectionUploadUrl` 申请预签名上传地址 |
+| 2 | sysAK | PUT 上传本次采集报告对象 |
+| 3 | sysAK | `SubmitHostInspection` 提交巡检，返回 32 位十六进制 `inspection_id` |
+| 4 | 云端 | 后端分析并生成报告 |
+| 5 | 桌面／IDE | `GetHostInspection` 轮询任务，终态后 `GetInspectionReport` 取报告正文 |
+
+- 上传成功后，本次任务的 `request_id` 会被 `inspection_id` 覆盖，任务标记 `uploaded:true`；管家随即开始轮询，间隔 3 秒、最长 120 秒。终态为 `completed`、`partial_completed`、`failed`、`expired`、`cancelled`；可重试的 5xx 会退避重试，取消记为 499、超时记为 504。
+- 上传失败时回退本地 UUID，任务 `uploaded:false`，界面提示“上传失败：…；本次仅本地采集”，本地采集结果照常展示。
+- 云端结果**只保存在当前宿主进程内存中**，不写历史报告库；退出即消失。新一次采集会取代上一次仍在进行的轮询。
+- 首页段落显示“云端巡检结论：<级别>。巡检项 N，异常 M；实例 X，异常 Y。”并列出最多两个最严重异常项；仍在分析时追加“采集已上传，云端<状态> NN%。”，失败时追加“云端巡检未完成：<原因>。”。
+- 级别文案为 正常／建议／警告／错误／严重（`Normal/Suggestion/Warning/Error/Critical`）；任务状态文案为 已创建／已上传／排队中／下载中／校验中／分析中／生成报告中／已完成／部分完成／失败／已过期／已取消。
+- 点击“体检报告”打开云端巡检报告弹窗：标题为报告名（缺省“云端巡检报告”）、副标题为报告 ID，顶部是级别徽标与巡检项／实例计数，随后是主机与窗口范围，再逐项列出检查项名称、级别与原因。项名按中文映射显示（如 CPU 饱和度、内存压力、磁盘容量、文件描述符、GPU 健康、内核配置风险、日志磁盘占用、网络错误、系统服务、采集覆盖率）；报告未含项级结果时显示“本次报告未包含项级结果。”。
+- **云端级别来自后端规则，不是本机评分**，两者不可互相替代；`partial_completed` 表示部分检查项缺证据（如能耗不支持、无 nvidia-smi、日志权限不足），不等于全部正常。
+- 只读查询接口（第 10–11 节）的 GET 不会触发采集、上传或轮询，只能读到已缓存的云端字段。
 
 ## 4. 资源详情：指标、排行和进程结束
 
@@ -283,7 +310,7 @@ OK 是某条检查的级别，不表示所有检查完成；WARN 是风险／警
 
 首次准备可能要几秒。点击“刷新诊断”会通过独立 AgentSight 获取证据，再由本地 OpenAPI 分析；界面自身没有付费模型调用或自动修复。首次读取没有缓存时可能采集，与公共 HTTP 的 cache-only GET 不同。
 
-0.2.17 的“数据范围”仅保留统计时间、更新时间和覆盖状态；来源部署与授权说明见 README。下图保留 0.2.15 的“采集详情”旧界面，不作为当前操作入口。报告主要消费五类：进程探活、会话与 Token、中断明细、未处理中断汇总、调用延迟。
+0.2.18 的“数据范围”仅保留统计时间、更新时间和覆盖状态；来源部署与授权说明见 README。下图保留 0.2.15 的“采集详情”旧界面，不作为当前操作入口。报告主要消费五类：进程探活、会话与 Token、中断明细、未处理中断汇总、调用延迟。
 
 ![Agent 服务与来源详情](./assets/user-guide/11b-agent-coverage.png)
 
@@ -304,7 +331,7 @@ OK 是某条检查的级别，不表示所有检查完成；WARN 是风险／警
 
 ### 6.3 总览：进程和证据覆盖
 
-0.2.17 总览前置诊断结论与按类型归组的问题，可跳转只读证据，并提供实测延迟与进程探活。进程支持名称/PID 搜索、角色与状态组合筛选及每页 20 条分页，筛选回第一页；本地交互不追加采集或改变顶部统计。下图保留 0.2.15 的列表样例。
+0.2.18 总览前置诊断结论与按类型归组的问题，可跳转只读证据，并提供实测延迟与进程探活。进程支持名称/PID 搜索、角色与状态组合筛选及每页 20 条分页，筛选回第一页；本地交互不追加采集或改变顶部统计。下图保留 0.2.15 的列表样例。
 
 ![Agent 进程探活](./assets/user-guide/11c-agent-processes.png)
 
@@ -328,7 +355,7 @@ OK 是某条检查的级别，不表示所有检查完成；WARN 是风险／警
 4. 展开行仅看报告已有的关联中断元数据，不读取会话正文。
 5. 需要进一步处理时记录 ID、时间和来源；不要向外部服务上传真实报告。
 
-顶部 Token／会话统计不随搜索改变；它们以近 24 小时窗口内已有完整来源为准，来源不完整时可能为 `—`。0.2.17 显式包含辅助调用，输入已含缓存用量，不是会话终身累计；上游未报告 usage 的调用可能未计入，`0` 仅表示来源记录为零，不能宣称完整消耗。Token 是计数，**不是已经计算出的费用**。目前没有按 Session 准确归属 CPU、GPU、内存，也没有真实 Session 清理。
+顶部 Token／会话统计不随搜索改变；它们以近 24 小时窗口内已有完整来源为准，来源不完整时可能为 `—`。0.2.18 显式包含辅助调用，输入已含缓存用量，不是会话终身累计；上游未报告 usage 的调用可能未计入，`0` 仅表示来源记录为零，不能宣称完整消耗。Token 是计数，**不是已经计算出的费用**。目前没有按 Session 准确归属 CPU、GPU、内存，也没有真实 Session 清理。
 
 ### 6.5 中断证据
 
@@ -426,7 +453,8 @@ P95 不是平均值；P50 是中位数。不同模型、请求长度、样本量
 | 能力 | 状态 | 当前可用范围／缺口 |
 | --- | --- | --- |
 | 桌面窗口、小管家与 IDE 面板／状态栏 | 已完成 | 两种宿主；本批次隔离原生验收不等于系统安装或全硬件认证 |
-| 本机资源、单位、采样时间、Top10 | 已完成，采集有界 | 不是全进程／全历史数据库；部分字段可缺测 |
+| 本机资源、单位、采样时间、Top10 | 已完成，采集有界 | 当前用户直接调用系统 sysak `idc_inspect`（schema 1.1）；不是全进程／全历史数据库；部分字段可缺测 |
+| 云端巡检上传与报告（步骤 1–5） | 已完成链路，需显式凭据 | 仅在提供 SysOM 环境变量时启用；结果只存内存，云端级别不是本机评分；`partial_completed` 不等于全部正常 |
 | 巡检启停、1–1440 分钟周期 | 已完成 | 每宿主独立；退出停止本实例巡检 |
 | 分数、覆盖提示、TXT 报告 | 已完成 | 只说明当前证据；不是完整健康认证 |
 | 根分区／目录、FD、内存体检 | 部分完成／覆盖受限 | 有真实链路，扫描和插件不能保证完整覆盖 |
@@ -437,7 +465,7 @@ P95 不是平均值；P50 是中位数。不同模型、请求长度、样本量
 | 连续 Profiling、Timeline、Kernel 热点 | 待完成 | 当前真实页仅已有原生证据；离线案例不算实现 |
 | GPU 事件案例／离线 Profiling／告警渠道 | Demo | 不实际采集远程实例或接入通知 |
 | AgentSight 独立部署／五类元数据诊断 | 已完成链路，来源有界 | API 和 trace 独立；并非所有调用都支持 |
-| 真实调用 trace/API 受控服务 | 已实现，可选授权 | 主机级隐私风险；清理目标非硬磁盘配额 |
+| 真实调用 trace/API 受控服务 | 已实现，可选授权；采集控制待适配 | 主机级隐私风险；清理目标非硬磁盘配额。控制命令仍是 `sysak idc --agent-collection`，而合并后的 sysAK 只有 `idc_inspect` 且无该参数，这条链路对当前 sysAK 不可用，本次未验证 |
 | Agent 自动修复、真实重启／标记解决 | 待完成 | 建议只读；示例恢复流程为 Demo |
 | Session 真实资源归属与清理 | 待完成 | 不按 Session 拆 CPU/GPU，也不清真实会话 |
 | 受控进程结束 | 已完成受控流程 | 身份权限复核、二次确认、SIGTERM；不保证退出、不删文件 |
@@ -448,16 +476,17 @@ P95 不是平均值；P50 是中位数。不同模型、请求长度、样本量
 
 ### 验证范围说明
 
-- 本文名称、版本和操作说明对应 SysAgent 0.2.17；双端构建成功，隔离 AppImage 原生验收 30/30、IDE 原生验收 24/24 通过，涵盖本地时间显示、刷新失败保留旧结果、分页与窄屏；全量回归及最终发布包校验结果见根 README，旧版本数量和哈希不是 0.2.17 结果。
-- 配图保留改名前 0.2.15 共享 React 页面和人工夹具的展示／导航，包括只读确认样例；该次截图没有 root 执行、真实 GPU 检查、用户会话读取、信号或外部请求，旧品牌与时间格式不代表当前显示。
-- 文档阅读版重新生成并检查 26 张图片、链接与桌面／手机布局；本批次同时重新打包并隔离验收原生 Electron／IDE 外壳，不安装／升级系统服务，不改变采集授权，不发起模型调用；未认证全部真实正向硬件链路。
+- 本文名称、版本和操作说明对应 SysAgent 0.2.18 当前源码。本次实际执行并检查退出码的验证是：桌面 `npm run build` 退出 0；`sysom-client` 与 `idc-controller` 定向回归 220/220 通过；经用户显式授权的预发全链路实测走通 sysAK 上传（步骤 1–4）与桌面轮询取报告（步骤 5），终态 `partial_completed` 100%、`reportStatus=Success`、总体级别严重、10 个检查项中 5 项异常；并在隔离端口 5174 的开发网页核对了云端结论段落、云端报告弹窗（级别徽标、项级结果、主机与窗口范围）与刷新文案。
+- 本次**没有重新安装软件、没有重跑完整发布包构建**：`vendor/sysak/linux-x64/` 仍是旧 `idc` 四命令包，缺少 `idc_inspect`，根构建入口与 IDE 构建会在准备 bundle 时失败（详见[打包文档](./PACKAGING.md)与[根 README](../README.md)）。应用全量测试另有两项已知环境问题（`health-score` 缺参考夹具、`sysak-package` 15 s 超时偶发），因此不声称全量通过。0.2.17 的 AppImage 30/30、IDE 24/24 等数量绑定当时的发布包，不是 0.2.18 结果，也不沿用旧哈希。
+- 配图保留改名前 0.2.15 共享 React 页面和人工夹具的展示／导航，包括只读确认样例；该次截图没有 root 执行、真实 GPU 检查、用户会话读取、信号或外部请求，旧品牌与时间格式不代表当前显示。云端巡检结论与云端报告弹窗是 0.2.18 新增内容，没有对应配图。
+- 文档阅读版由 `docs/scripts/render-user-guide.py` 从本文生成，生成时校验图片与链接；历史批次曾检查 26 张图片与桌面／手机布局，本次只重新生成并校验链接，没有重新截图，也没有重新打包或隔离验收原生 Electron／IDE 外壳。不安装／升级系统服务，不改变采集授权，不发起模型调用；未认证全部真实正向硬件链路。
 - 查询 API 的实现与测试记录见专项文档；检查正在使用的实例是否真正开放接口，再决定对接，不能单看版本号。
 
 ## 10. 第三方程序怎样对接
 
 ### 10.1 推荐：本机只读 HTTP，不抓网页 DOM
 
-第三方应用应读取稳定的 JSON 数据和能力目录，不解析页面文字，也不直接使用 UI 的内部 IPC 或 root socket。HTTP／JSON 方便 Python、curl、Node、Go 等接入；特权执行仍保留 Linux socket 边界。
+第三方应用应读取稳定的 JSON 数据和能力目录，不解析页面文字，也不直接使用 UI 的内部 IPC 或 root socket。HTTP／JSON 方便 Python、curl、Node、Go 等接入；AgentSight 采集控制仍保留 Linux socket 边界，资源采集与进程操作则由管家以当前用户身份调用系统 sysak，不向第三方开放执行入口。
 
 ![第三方查询接入流程](./assets/user-guide/api-flow.svg)
 
@@ -543,7 +572,8 @@ P95 不是平均值；P50 是中位数。不同模型、请求长度、样本量
 - `total` 是筛选后**缓存**条数，不是全机／上游总量。
 - `next_offset` 为下一页位置或 null。
 - `status`、coverage 和 reason 必须保留，不能把空值转换为正常或 0。
-- 外层 `mode: "mock"` 是既有部署标签；应同时检查 state 的 `mode: "collected"`、任务 `simulated: false`、来源、时间与覆盖。不仅凭一个词判断数据真实性。
+- `status.mode` 为 `mock` 或 `pre`：`mock` 是未配置 SysOM 凭据的本地部署标签，`pre` 表示已配置凭据、采集后会上传云端巡检。两者都不代表数据是模拟的；应同时检查 state 的 `mode: "collected"`、任务 `simulated: false`、来源、时间与覆盖，不仅凭一个词判断数据真实性。
+- `status.collector`（name/command/schema_version/binary/source/version）与 `status.collection`（逐段 status/reason）说明本次采集来源与覆盖；`source` 为 `system` 或 `override`。`status.cloud_inspection` 只在 pre 模式且上传成功后有值，含 `inspectionId`、`status`、`phase`、`progress`、`reportId`、`reportStatus`、`report`、`error`、`updatedAt`；GET 不触发上传或轮询。
 
 ### 10.5 查询参数
 
@@ -641,31 +671,37 @@ PY
 
 ### 11.1 在哪里改什么
 
-以下路径均以项目 `sysom_idc/` 为根，不是旧 Demo 的目录结构。
+以下路径均以仓库根目录为根（`sysagent-idc/`、`sysagent-ide-extension/`、`docs/`、`scripts/`、`vendor/`），不是旧 Demo 的 `sysom_idc/` 目录结构。
 
 | 路径 | 职责 |
 | --- | --- |
-| `sysom_idc/sysagent-idc/src/App.tsx` | 导航、设备、日志、运维、公共弹窗 |
-| `sysom_idc/sysagent-idc/src/DesktopDemo.tsx` | 主页、小管家、缓存轮询与告警展示；名字保留历史，不能据名字判 Demo |
-| `sysom_idc/sysagent-idc/src/HealthGuardPage.tsx` | 资源、体检、报告、进程确认 |
-| `sysom_idc/sysagent-idc/src/CollectionStatus.tsx` | 巡检配置与周期输入 |
-| `sysom_idc/sysagent-idc/src/ResourceRankings.tsx` | 真实 Top10／Agent 筛选与独立 Demo Session 展示 |
-| `sysom_idc/sysagent-idc/src/GpuDiagnostics.tsx` | GPU 概览、检查、原生作业证据、Demo 事件／Profiling |
-| `sysom_idc/sysagent-idc/src/AgentDiagnostics.tsx` | 本机只读 Agent 视图与独立示例视图 |
-| `sysom_idc/sysagent-idc/src/health-data.ts` | 资源／体检模型、评分与 TXT 报告 |
-| `sysom_idc/sysagent-idc/src/agent-diagnostics-data.ts` | Agent 元数据类型、来源与状态标签 |
-| `sysom_idc/sysagent-idc/src/idc-client.ts` | UI 到宿主 IPC／Webview 或开发 HTTP 的调用 |
-| `sysom_idc/sysagent-idc/electron/main.cjs`／`preload.cjs` | 桌面窗口、生命周期、严格 IPC 桥接 |
-| `sysom_idc/sysagent-ide-extension/src/extension.ts` | IDE 扩展激活、状态栏、RPC、报告保存与查询启动 |
-| `sysom_idc/sysagent-idc/electron/idc-controller.cjs` | 采集调度、缓存、独立 Agent 诊断、任务与受控操作 |
-| `sysom_idc/sysagent-idc/electron/local-query-api.cjs` | 公共本机只读 HTTP、认证、发现与生命周期 |
-| `sysom_idc/sysagent-idc/electron/query-data.cjs` | 15 数据集、静态字段白名单、查询规则与契约 |
-| `sysom_idc/sysagent-idc/openapi-service.ts`／`collected-state.ts` | 内部证据规范化、真实资源解析与报告函数导出 |
-| `sysom_idc/sysagent-idc/electron/generated/openapi.cjs` | 既有构建生成的共享 CommonJS；不要手改 |
-| `sysom_idc/sysagent-idc/electron/agentsight-client.cjs`／`agentsight-deployment.cjs` | 选择性元数据获取、独立配套准备、受控服务启动 |
-| `sysom_idc/sysagent-idc/electron/sysak-root.cjs`／`build/sysak-root-runner.py` | 固定 root 安装验证与 socket 执行边界 |
-| `sysom_idc/sysagent-idc/tests/`／`sysagent-ide-extension/test/` | 模型、解析、权限、HTTP 和宿主验收 |
-| `sysom_idc/sysagent-idc/backend/` | 未接入当前前端的历史 FastAPI 骨架，不能当作真实查询入口 |
+| `sysagent-idc/src/App.tsx` | 导航、设备、日志、运维、公共弹窗 |
+| `sysagent-idc/src/DesktopDemo.tsx` | 主页、小管家、缓存轮询与告警展示；名字保留历史，不能据名字判 Demo |
+| `sysagent-idc/src/HealthGuardPage.tsx` | 资源、体检、报告、进程确认、云端巡检结论与报告入口 |
+| `sysagent-idc/src/CloudReport.tsx` | 云端巡检报告弹窗、级别／状态／项名中文映射 |
+| `sysagent-idc/src/CollectionStatus.tsx` | 巡检配置与周期输入 |
+| `sysagent-idc/src/ResourceRankings.tsx` | 真实 Top10／Agent 筛选与独立 Demo Session 展示 |
+| `sysagent-idc/src/GpuDiagnostics.tsx` | GPU 概览、检查、原生作业证据、Demo 事件／Profiling |
+| `sysagent-idc/src/AgentDiagnostics.tsx` | 本机只读 Agent 视图与独立示例视图 |
+| `sysagent-idc/src/health-data.ts` | 资源／体检模型、评分与 TXT 报告 |
+| `sysagent-idc/src/agent-diagnostics-data.ts` | Agent 元数据类型、来源与状态标签 |
+| `sysagent-idc/src/idc-client.ts` | UI 到宿主 IPC／Webview 或开发 HTTP 的调用 |
+| `sysagent-idc/electron/main.cjs`／`preload.cjs` | 桌面窗口、生命周期、严格 IPC 桥接 |
+| `sysagent-ide-extension/src/extension.ts` | IDE 扩展激活、状态栏、RPC、报告保存与查询启动 |
+| `sysagent-idc/electron/idc-controller.cjs` | 系统 sysak 解析与采集调度、缓存、云端巡检状态机、独立 Agent 诊断、任务与受控操作 |
+| `sysagent-idc/electron/sysom-client.cjs` | 步骤 5 只读客户端：凭据加载、子进程环境白名单、任务轮询与报告获取 |
+| `sysagent-idc/electron/process-control.cjs` | 当前用户进程检查／SIGTERM（`idc_inspect --process-action`，schema 1.0） |
+| `sysagent-idc/electron/local-query-api.cjs` | 公共本机只读 HTTP、认证、发现与生命周期 |
+| `sysagent-idc/electron/query-data.cjs` | 15 数据集、静态字段白名单、查询规则与契约 |
+| `sysagent-idc/openapi-service.ts`／`collected-state.ts` | 内部证据规范化、真实资源解析与报告函数导出 |
+| `sysagent-idc/electron/generated/openapi.cjs` | 既有构建生成的共享 CommonJS；不要手改 |
+| `sysagent-idc/electron/agentsight-client.cjs`／`agentsight-deployment.cjs` | 选择性元数据获取、独立配套准备、受控服务启动与采集控制 |
+| `sysagent-idc/electron/sysak-root.cjs`／`build/sysak-root-runner.py` | root 辅助服务，当前只放行 AgentSight 采集控制；资源采集不经此路径 |
+| `sysagent-idc/scripts/prepare-sysak.cjs` | 从 vendor 或指定构建产物准备并校验 `resources/sysak/` bundle |
+| `sysagent-idc/demo-api.ts` | 开发／预览网页挂载真实控制器的 `/api/idc` 路由，不是隔离 Demo |
+| `sysagent-idc/tests/`／`sysagent-ide-extension/test/` | 模型、解析、权限、HTTP 和宿主验收 |
+| `sysagent-idc/backend/` | 未接入当前前端的历史 FastAPI 骨架，不能当作真实查询入口 |
+| `scripts/build.mjs` | 根统一构建入口：版本检查、bundle 准备、三个 deb 与 VSIX |
 
 ### 11.2 新增一种查询数据的正确方向
 
@@ -680,27 +716,33 @@ PY
 
 ### 11.3 开发与构建入口
 
-已具备依赖时，在各项目目录执行：
+统一构建在项目根目录执行 `npm run build`（三个 deb + VSIX）、`npm run build:web`（仅网页）；回归为 `npm test`、`npm run test:api`、`npm run check:versions`。已具备依赖时，也可在各子项目目录执行：
 
 ```bash
-# sysom_idc/sysagent-idc
+# sysagent-idc
 npm run build
 npm test
 
-# sysom_idc/sysagent-ide-extension
+# sysagent-ide-extension
 npm run typecheck
 npm run build
 ```
 
-桌面 build 先生成共享 OpenAPI，再做 TypeScript 和 Vite 构建；IDE 复用模型并打包宿主／Webview。安装用户不需要开发工具，也不需要启动历史 FastAPI。开发命令可能运行真实采集服务，不能把普通 Vite 开发入口当成完全隔离的演示环境。
+桌面 build 先生成共享 OpenAPI，再做 TypeScript 和 Vite 构建；IDE 复用模型并打包宿主／Webview，且同样要求 `sysagent-idc/resources/sysak/` bundle 就绪。当前 vendor sysAK 输入缺少 `idc_inspect`，原生构建与 IDE 构建会失败，只有网页构建不受影响，详见[打包文档](./PACKAGING.md)。安装用户不需要开发工具，也不需要启动历史 FastAPI。
 
-本文截图脚本位于 `sysom_idc/docs/scripts/capture-user-guide.cjs`：仅载入当前 React 源码，不加载采集插件，注入人工样例，阻止外部请求与真实执行。需要已存在的项目 Node 依赖、本机 Chrome 和沙箱可用；不安装额外软件，不用 `--no-sandbox`。截图来源与结果记录在[截图清单](./assets/user-guide/capture-manifest.json)。
+**开发网页不是隔离的演示环境：** `npm run dev:web`／`npm run preview` 会通过 `demo-api.ts` 挂载真实控制器，刷新与体检会调用本机系统 sysak 执行真实采集；配置了 SysOM 凭据时还会真实上传。只想看不上传时设置 `SYSOM_IDC_UPLOAD=0`。
+
+本文截图脚本位于 `docs/scripts/capture-user-guide.cjs`：仅载入当前 React 源码，不加载采集插件，注入人工样例，阻止外部请求与真实执行。需要已存在的项目 Node 依赖、本机 Chrome 和沙箱可用；不安装额外软件，不用 `--no-sandbox`。阅读版由 `docs/scripts/render-user-guide.py` 生成并校验链接与图片。截图来源与结果记录在[截图清单](./assets/user-guide/capture-manifest.json)。
 
 ## 12. 常见疑问速查
 
 | 问题 | 答案 |
 | --- | --- |
 | 为什么有高分还有“未检查”？ | 分数只描述当前可评分证据，未知不等于正常。 |
+| 为什么提示“未找到已安装的 sysAK”或缺少 idc_inspect 组件？ | 资源采集用本机系统 sysak，不随 SysAgent 安装；需安装含 `idc_inspect` 的 sysak，或用 `SYSOM_SYSAK_BIN` 指定。管家不会联网下载组件。 |
+| 为什么没有云端巡检结论？ | 未提供 `SYSOM_POP_ENDPOINT`／`SYSOM_ACCESS_KEY_ID`／`SYSOM_ACCESS_KEY_SECRET`，或设了 `SYSOM_IDC_UPLOAD=0`；也可能上传失败或云端仍在分析。本地结果照常可用。 |
+| 云端“严重”和本机 100 分矛盾吗？ | 不矛盾：云端级别来自后端规则，本机分数只汇总当前可评分证据，二者口径不同，不能互相替代。 |
+| 为什么云端报告重启后不见了？ | 云端结果只存当前宿主进程内存，没有历史报告库。 |
 | 为什么磁盘空间和排行看起来不对应？ | 首页是空间容量；排行是进程 B/s I/O，二者不是同一个量。 |
 | 为什么 Agent API 可用但没有会话？ | API 本身不生成历史；trace 可能未启用、失败或没捕获支持的调用。 |
 | 为什么停止 trace 后还能查到数据？ | 停止采集不删除已有历史；报告应按时间和窗口理解。 |

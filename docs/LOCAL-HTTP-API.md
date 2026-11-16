@@ -4,7 +4,7 @@
 
 面向本机脚本、其他应用和 Agent，尽可能查询管家已有的信息，而非仅复用页面显示的 Top10。查询与执行分离：此次仅开放查询，不通过公共 HTTP 暴露进程终止、配置修改、任意命令、文件读取或上传。
 
-当前说明对应 SysAgent 0.2.17（独立 AgentSight 0.16.0），不是旧版 0.2.6 Demo。真实资源与体检来自 sysAK IDC，部分模块已有独立证据链；是否可用以当前能力和证据状态为准。模拟、未采集、部分采集和失败不得冒充正常。旧发行件不自动获得新接口。
+当前说明对应 SysAgent 0.2.18（独立 AgentSight 0.16.0），不是旧版 0.2.6 Demo。真实资源与体检来自**当前用户直接调用的系统 sysAK `idc_inspect`**（采集 schema 1.1），经本机回环 OpenAPI 解析；部分模块已有独立证据链，是否可用以当前能力和证据状态为准。模拟、未采集、部分采集和失败不得冒充正常。旧发行件不自动获得新接口。
 
 ## 调研与选择
 
@@ -13,7 +13,7 @@
 | 方式 | 优点 | 局限 | SysAgent 用途 |
 | --- | --- | --- | --- |
 | 回环 HTTP/JSON | curl、Python、Node 和其他语言均可直接调用；可提供 OpenAPI 契约 | 同机其他用户也可能访问端口；必须认证和验证 Host/Origin | 普通权限下开放查询 |
-| Unix domain socket | 可结合文件权限与 peer 凭据约束调用者，不暴露 TCP 端口 | 跨平台及通用客户端接入较复杂 | 保留现有 root IDC 执行边界 |
+| Unix domain socket | 可结合文件权限与 peer 凭据约束调用者，不暴露 TCP 端口 | 跨平台及通用客户端接入较复杂 | 保留 root 辅助服务边界（现仅用于 AgentSight 采集控制） |
 | 应用 IPC/Webview RPC | 适合应用内部通信及受信 UI 调用 | 外部程序不便使用，属于宿主内部协议 | 保留桌面与 IDE 内部通道 |
 
 Ollama 的官方 API 使用本机 HTTP；Docker 默认通过 Unix socket 提供 Engine API，也支持受保护的其他传输。说明这两种选择均有成熟实践，不需要将特权执行能力一起搬到公共 HTTP。
@@ -38,7 +38,8 @@ Ollama 的官方 API 使用本机 HTTP；Docker 默认通过 Unix socket 提供 
 
 | 功能 | 查询信息／数据集 | 真实性及限制 |
 | --- | --- | --- |
-| 采集器 | `status`：安装、启停、周期、下一次巡检、最近资源／体检任务、错误 | 普通权限控制器状态；不公开内部写 token |
+| 采集器 | `status`：安装、启停、周期、下一次巡检、最近资源／体检任务、错误，以及 `collector`（name/command/schema_version/binary/source/version）、`collection`（schema_version/command/version/status/collected_at/duration_ms 与逐段 `sections[{name,status,reason}]`） | 普通权限控制器状态；`command` 为 `idc_inspect`，`schema_version` 为 `1.1`；`source` 区分 `system` 与 `override`（`SYSOM_SYSAK_BIN`）；未采集时 `collection` 为 `null`；不公开内部写 token |
+| 云端巡检 | `status.cloud_inspection`、`snapshot` 内同字段：`inspectionId`、`status`、`phase`、`progress`、`reportId`、`reportStatus`、`report`、`error`、`updatedAt` | 只在配置 SysOM 凭据（`mode:"pre"`）且 sysAK 上传成功后才有值；`report` 是后端报告正文，字段随后端演进，契约只约束信封。GET 不触发上传或轮询，未配置/失败时为 `null` 或带 `error` |
 | 整体体检 | `snapshot`、`summary`、`report`、`inspections`、`optimizations` | 保留分数算法、未检查／受限、证据和建议；健康页面 Agent／日志／网络／I/O 部分项尚无证据链 |
 | CPU／内存／磁盘／能耗／GPU | `resources`、`resource-rows` | 完整已存资源和排行，不限 UI Top10；进程采集整体 Top20 与 Agent Top20 去重，单资源最多约 40 行，并非全进程库 |
 | 进程资源 | `resource-rows` 的 PID、starttime、usage、quantity、agentKind | 内存是 RSS；磁盘行是 B/s I/O 速率，不是进程／目录磁盘占用；清理资格仅信息，不开放执行 |
@@ -46,15 +47,15 @@ Ollama 的官方 API 使用本机 HTTP；Docker 默认通过 Unix socket 提供 
 | Agent 运行与诊断 | `agent-processes`、`agent-findings`、`agent-coverage` | 独立 AgentSight 服务提供证据，SysAgent OpenAPI 分析；与健康页面 Agent 检查项分开 |
 | Agent Session | `agent-sessions` | 模型、会话数、token、首末时间；没有对话正文或 Session 真实资源归属 |
 | Agent 中断与耗时 | `agent-interruptions`、`agent-latency` | 已消费的中断事件、严重度、解决状态、TTFT／E2E／TPS／TPOT；保留覆盖原因 |
-| 操作与任务 | `operations`、`tasks` | 操作最多 30 条；成功采集／诊断任务最多 100 条，仅本进程生命周期，不是持久化任务数据库 |
+| 操作与任务 | `operations`、`tasks` | 操作最多 30 条；成功采集／诊断任务最多 100 条，仅本进程生命周期，不是持久化任务数据库。任务的 `uploaded` 与 `inspection_id` 只在 pre 模式且 sysAK 返回 32 位 hex `inspection_id` 时置位；上传失败回退 UUID 时 `uploaded:false`，不带 `inspection_id` |
 | 导出报告 | `report` | 根据已有缓存生成结构化 JSON 与健康报告文本，不另行采集；无历史报告库 |
 | 设备列表、日志样例、GPU 离线案例 | 能力发现标明不开放为真实数据 | 静态 Demo、React 局部状态及离线样例，不冒充本机事实；不代理 AgentSight 任意路径 |
 
-控制器／内部 OpenAPI 的 `mode: "mock"` 是现有部署标签，不表示快照一定为模拟。外部程序应结合 `state.mode: "collected"`、任务 `simulated: false`、来源、时间和覆盖状态判断；任何缺证据／受限结果都不代表健康。
+控制器／内部 OpenAPI 的 `mode: "mock"` 是现有部署标签，不表示快照一定为模拟；`mode: "pre"` 表示已配置 SysOM 凭据、sysAK 会在采集后上传云端巡检。外部程序应结合 `state.mode: "collected"`、任务 `simulated: false`、来源、时间和覆盖状态判断；任何缺证据／受限结果都不代表健康。云端 `report` 的结论级别来自后端，不是本机评分，二者不可互相替代。
 
 Agent 证据当前固定最近 24 小时，最多 256 个进程、500 个会话和 200 个未解决中断。API 分页只对已有缓存分页，不能拓宽上游窗口或补齐未采到的信息；每个数据集的元信息和目录限制优先于上述概述。
 
-## 0.2.17 Agent 管家视图与查询边界
+## 0.2.18 Agent 管家视图与查询边界
 
 桌面和 IDE 共用紧凑的实时诊断视图，固定最近 24 小时。四张 KPI（会话数、输入 Token、输出 Token、全窗口未处理中断）始终保留，未返回报告或数值缺失显示 `—`，`0` 仅表示来源记录为零；会话与 Token 包含辅助调用，输入已含缓存用量，上游缺失 usage 可能未计入。API 与真实采集状态独立；“数据范围”仅保留统计时间、更新时间和覆盖状态，来源部署与授权说明见安装文档，不在诊断页重复展示。
 
@@ -65,6 +66,8 @@ Agent 证据当前固定最近 24 小时，最多 256 个进程、500 个会话�
 
 页面搜索、展开、切换指标和查看事件只是本地报告交互，不改变 HTTP 查询参数、采集授权或数据来源，不直接获取对话正文、不提供 Session 独占 CPU/GPU 归属、不自动修复、部署或发起付费调用。停用采集保留已有历史。刷新失败仍显示上次报告并明确标记“旧结果 · 刷新失败”，更新中亦标明尚未更新；不能将旧结果当作本次采集成功。公共 GET 仍只读取宿主缓存，UI 的刷新诊断沿用内部报告通道，不新增公共执行接口。
 
+体检首页的云端巡检结论与报告弹窗是另一条链路：它消费 `status.cloud_inspection.report`，由 sysAK 上传（步骤 1–4）和宿主只读轮询（步骤 5）产生，不属于 Agent 24 小时窗口，也不通过公共 GET 触发。凭据门槛、上传内容与失败回退见[根 README](../README.md#云端巡检与上传)。
+
 ## HTTP 路径
 
 所有路径均需独立查询 Bearer token；只有 `GET`。数据尚未采集时 `snapshot` 返回 `null` 并附缓存时间；需要结果的数据集／分数／报告返回 `503`，不自动采集。已有部分或不可用证据保留原状态，而不是伪造完整数据。
@@ -72,8 +75,8 @@ Agent 证据当前固定最近 24 小时，最多 256 个进程、500 个会话�
 | 路径 | 内容 |
 | --- | --- |
 | `/api/v1/capabilities` | 目录、可查询字段、来源、限制与未开放功能 |
-| `/api/v1/status` | 控制器与本机查询服务状态 |
-| `/api/v1/snapshot` | 一次一致性读取 status、health state、Agent 诊断和任务缓存 |
+| `/api/v1/status` | 控制器与本机查询服务状态，含 `collector`、`collection` 逐段覆盖与 `cloud_inspection` 云端巡检视图 |
+| `/api/v1/snapshot` | 一次一致性读取 status（含 `cloud_inspection`）、health state、Agent 诊断和任务缓存 |
 | `/api/v1/summary` | 与界面一致的健康分数、评分范围、未知／不可用数量 |
 | `/api/v1/report` | 全量结构化报告及健康文本；文本排行沿用界面 Top10，JSON 保留完整缓存 |
 | `/api/v1/datasets/{name}` | 指定数据集筛选、排序、投影、分页 |
@@ -152,11 +155,13 @@ PY
 
 ## 构建与验证
 
-本接口改动位于 `sysom_idc/sysagent-idc/electron/`，桌面和 IDE 通过同一个控制器启动；查询目录与契约来自 `query-data.cjs`。桌面报告函数通过 `openapi-service.ts` 导出并由既有 `build:openapi` 生成共享 CommonJS，IDE 直接复用相同 TypeScript 源函数，不能手改 generated 文件。源码构建需先在 `sysom_idc/sysagent-idc` 执行 `npm run build`，再在 `sysom_idc/sysagent-ide-extension` 执行 `npm run typecheck && npm run build`。
+本接口实现位于 `sysagent-idc/electron/`，桌面和 IDE 通过同一个控制器启动；查询目录与契约来自 `query-data.cjs`。桌面报告函数通过 `openapi-service.ts` 导出并由既有 `build:openapi` 生成共享 CommonJS，IDE 直接复用相同 TypeScript 源函数，不能手改 generated 文件。公共查询契约 `/api/v1/openapi.json` 的 `info.version` 为 **1.0**，其中 `Status.schema_version` 为 **1.1**；页面展示解析使用的内部 `/openapi/v1` 契约（`openapi-contract.json`）为 **1.3.0**，采集 schema **1.1**、Agent 会话 schema **1.0**，两者不是同一份契约。源码构建需先在 `sysagent-idc` 执行 `npm run build`，再在 `sysagent-ide-extension` 执行 `npm run typecheck && npm run build`；两者都要求 `sysagent-idc/resources/sysak/` 已就绪，见[根 README 的已知构建缺口](../README.md#3-一键构建)。
 
-0.2.17 双端构建成功，隔离 AppImage 原生验收 30/30、IDE 原生验收 24/24 通过；全量回归及最终发布包校验结果见根 README，不沿用旧版本数量或哈希。
+**0.2.18 迁移后验证（本次实际执行）：** 桌面 `npm run build` 退出 0；`sysom-client` 与 `idc-controller` 定向回归 220/220 通过（17 + 203）。经用户显式授权的预发全链路实测走通 sysAK 上传（步骤 1–4）与桌面轮询取报告（步骤 5）：`inspection_id=e2638868b4314a6c811e53e99ce65237`，终态 `partial_completed` 100%，`reportId=inspection-199ef386-18e2-4ccf-9045-83f50d2709d9`，`reportStatus=Success`，总体级别 Critical，10 个检查项中 5 项异常；采集分项含 energy `not_supported`、gpu `no_nvidia_smi`、log `permission_denied`、config `total_json_limit`，排行行携带 `starttime`。开发网页（隔离端口 5174）验证了云端结论段落、云端报告弹窗（严重徽标、10 条 `itemSummaries`、范围主机与 30m 窗口）及刷新文案。该次**未重新安装软件、未重跑完整发布包构建**（vendor sysAK 输入缺少 `idc_inspect`，见根 README），应用全量测试仍有两项已知环境问题（`health-score` 缺参考夹具、`sysak-package` 15 s 超时偶发），因此不声称全量通过。预发实测需要显式授权与凭据，不属于默认回归。
 
-**0.2.15 历史验证：** 当时包含共享紧凑 Agent 管家及既有只读本机查询链路，不新增正文、进程执行或自动动作接口。双端分别构建成功，1,359 项定向回归通过；最终 AppImage 实际验收 23 项、VS Code 1.145.2 IDE 验收 15 项通过，覆盖有界 AgentSight → OpenAPI → 页面证据链与缺失/零值、来源失败和只读交互。包内代码与当时构建一致，离线包逐文件及归档校验通过；该次验证未重新安装，也未认证所有真实采集场景，不能作为 0.2.17 结果。当前打包说明见[打包文档](./PACKAGING.md)；生成/解压新包不替换已安装软件，需按[根 README](../README.md)安装并重启。
+**0.2.17 历史验证：** 当时双端构建成功，隔离 AppImage 原生验收 30/30、IDE 原生验收 24/24 通过。这些数量与当时的发布包绑定，不适用于 0.2.18 的采集与云端链路，也不沿用旧版本哈希。
+
+**0.2.15 历史验证：** 当时包含共享紧凑 Agent 管家及既有只读本机查询链路，不新增正文、进程执行或自动动作接口。双端分别构建成功，1,359 项定向回归通过；最终 AppImage 实际验收 23 项、VS Code 1.145.2 IDE 验收 15 项通过，覆盖有界 AgentSight → OpenAPI → 页面证据链与缺失/零值、来源失败和只读交互。包内代码与当时构建一致，离线包逐文件及归档校验通过；该次验证未重新安装，也未认证所有真实采集场景，不能作为 0.2.18 结果。当前打包说明见[打包文档](./PACKAGING.md)；生成/解压新包不替换已安装软件，需按[根 README](../README.md)安装并重启。
 
 ### 历史查询接口开发验证（0.2.14 源码）
 
