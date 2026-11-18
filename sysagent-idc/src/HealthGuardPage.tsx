@@ -600,7 +600,7 @@ export function HealthGuardPage({
           {"LOCAL SYSTEM HEALTH"}
         </span>
         <h1>
-          {collected ? summary.open.length ? '当前采集与诊断展示中有指标需要关注。' : '当前资源快照已更新，未检查项没有健康结论。' : summary.x ? `${summary.x} 项重要诊断异常，建议优先优化。` : summary.y ? "重要诊断已正常，仍有资源与服务需要关注。" : "已检查项运行良好，继续守护本机健康。"}
+          {collected ? summary.open.length ? '当前采集与诊断展示中有指标需要关注。' : '当前资源快照已更新。' : summary.x ? `${summary.x} 项重要诊断异常，建议优先优化。` : summary.y ? "重要诊断已正常，仍有资源与服务需要关注。" : "已检查项运行良好，继续守护本机健康。"}
         </h1>
         <p>
           {cloudReport ? cloudConclusion(cloudReport) : collected ? `诊断有确定结论 ${summary.checked} 项、未检查或结论受限 ${summary.unchecked} 项；资源不可用 ${summary.unavailable} 项。${cloudSuffix}` : <>{"已完成 "}

@@ -14,6 +14,13 @@ const SYSAK_UPLOAD_ENV_KEYS = [
   'SYSOM_SECURITY_TOKEN', 'SYSOM_REGION_ID', 'SYSOM_DEVICE_ID', 'SYSOM_IDC_UPLOAD',
 ];
 
+// 代理属网络配置而非凭据：办公网出口可能仅代理可达，洗掉会让 sysAK 直连网关
+// 超时（upload url failed: 网关连接失败）。仅 pre 模式透传，mock 模式仍全洗。
+const PROXY_ENV_KEYS = [
+  'http_proxy', 'https_proxy', 'no_proxy',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+];
+
 class SysomError extends Error {
   constructor(code, message, status = 503, retryable = false) {
     super(message);
@@ -53,7 +60,7 @@ function loadSysomConfig(env = process.env) {
   };
 }
 
-// 子进程 env：基础三项 + 仅在 pre 模式(config 非空)放行 SYSOM_* 白名单。
+// 子进程 env：基础三项 + 仅在 pre 模式(config 非空)放行 SYSOM_* 白名单与代理变量。
 // mock 模式即使父 env 里有 AK/SK 也不外泄，保持既有安全回归。
 function sysakChildEnv(config, env = process.env) {
   const base = {
@@ -62,7 +69,7 @@ function sysakChildEnv(config, env = process.env) {
     PYTHONDONTWRITEBYTECODE: '1',
   };
   if (!config) return base;
-  for (const key of SYSAK_UPLOAD_ENV_KEYS) {
+  for (const key of PROXY_ENV_KEYS.concat(SYSAK_UPLOAD_ENV_KEYS)) {
     const value = clean(env[key]);
     if (value !== undefined) base[key] = value;
   }
@@ -84,11 +91,43 @@ function toSysomError(error) {
   return new SysomError(code, message, status, status >= 500);
 }
 
+// 主进程 SDK 传输层(httpx)不读代理 env，Config 的代理字段在普通 HTTP 路径也
+// 不被消费：仅代理出口的网络里 getHostInspection 会直连超时。用 global-agent
+// 按 env 补丁全局 http(s)（forceGlobalAgent 默认 true，能覆盖 httpx 的显式 Agent）。
+// v4 默认读 GLOBAL_AGENT_ 前缀的大写变量，故传空命名空间读标准变量，并把仅小写
+// 的 env 临时归一为大写（bootstrap 时取值，调用后还原，不持久改动 process.env）。
+function ensureProxyBootstrap(env = process.env, { bootstrap = require('global-agent').bootstrap } = {}) {
+  if (globalThis.GLOBAL_AGENT) return false;
+  const httpProxy = clean(env.HTTP_PROXY) || clean(env.http_proxy);
+  const httpsProxy = clean(env.HTTPS_PROXY) || clean(env.https_proxy);
+  if (!httpProxy && !httpsProxy) return false;
+  const normalized = {
+    HTTP_PROXY: httpProxy,
+    HTTPS_PROXY: httpsProxy,
+    NO_PROXY: clean(env.NO_PROXY) || clean(env.no_proxy),
+  };
+  const saved = new Map(Object.keys(normalized).map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(normalized)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    bootstrap({ environmentVariableNamespace: '' });
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  return true;
+}
+
 function createSysomClient(config, { client } = {}) {
   if (!config) throw new SysomError('SysomNotConfigured', '缺少 SysOM 预发配置', 400);
   const SDK = require('@alicloud/sysom20231230');
   let api = client;
   if (!api) {
+    ensureProxyBootstrap();
     const core = require('@alicloud/openapi-core');
     const Client = SDK.default || SDK;
     api = new Client(new core.$OpenApiUtil.Config({
@@ -164,5 +203,6 @@ module.exports = {
   SysomError,
   loadSysomConfig,
   sysakChildEnv,
+  ensureProxyBootstrap,
   createSysomClient,
 };

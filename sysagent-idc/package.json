@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@alicloud/sysom20231230": "file:vendor/alicloud-sysom20231230-3.3.2.tgz",
+    "global-agent": "^4.1.7",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

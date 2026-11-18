@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   TERMINAL_STATUSES, SYSAK_UPLOAD_ENV_KEYS, SysomError,
-  loadSysomConfig, sysakChildEnv, createSysomClient,
+  loadSysomConfig, sysakChildEnv, createSysomClient, ensureProxyBootstrap,
 } = require('../electron/sysom-client.cjs');
 
 const CREDS = {
@@ -70,6 +70,38 @@ test('sysakChildEnv: pre mode allowlists only SYSOM_* keys', () => {
   assert.equal(child.AWS_SECRET_ACCESS_KEY, undefined);
   assert.equal(child.OTHER_TOKEN, undefined);
   assert.equal(child.PATH, '/usr/bin');
+});
+
+// 办公网出口可能仅代理可达：洗掉代理变量会让 sysAK 直连网关超时（upload url failed）。
+const PROXY_ENV = {
+  http_proxy: 'http://proxy.example:3127',
+  https_proxy: 'http://proxy.example:3127',
+  no_proxy: 'localhost,.aliyun.com',
+  HTTP_PROXY: 'http://proxy.example:3127',
+  HTTPS_PROXY: 'http://proxy.example:3127',
+  NO_PROXY: 'localhost,.aliyun.com',
+};
+
+test('sysakChildEnv: pre mode passes through proxy vars', () => {
+  const env = { ...CREDS, ...PROXY_ENV, PATH: '/usr/bin' };
+  const child = sysakChildEnv(loadSysomConfig(env), env);
+  for (const key of Object.keys(PROXY_ENV)) {
+    assert.equal(child[key], PROXY_ENV[key]);
+  }
+});
+
+test('sysakChildEnv: pre mode without proxy stays clean', () => {
+  const env = { ...CREDS, PATH: '/usr/bin' };
+  const child = sysakChildEnv(loadSysomConfig(env), env);
+  for (const key of Object.keys(PROXY_ENV)) {
+    assert.equal(child[key], undefined);
+  }
+});
+
+test('sysakChildEnv: mock mode strips proxy vars too', () => {
+  const env = { ...CREDS, ...PROXY_ENV, PATH: '/usr/bin' };
+  const child = sysakChildEnv(null, env);
+  assert.deepEqual(Object.keys(child).sort(), ['LANG', 'PATH', 'PYTHONDONTWRITEBYTECODE']);
 });
 
 test('getHostInspection: returns flat body and passes inspectionId', async () => {
@@ -207,4 +239,110 @@ test('pollHostInspection: transient 503 retried until deadline then throws', asy
 
 test('createSysomClient: requires config', () => {
   assert.throws(() => createSysomClient(null), (e) => e instanceof SysomError && e.code === 'SysomNotConfigured');
+});
+
+// 主进程 SDK 传输层(httpx)不读代理 env：仅代理出口的办公网里 getHostInspection
+// 直连超时，后台只见 SubmitHostInspection 不见轮询。用 global-agent 按 env 补丁
+// 全局 http(s)。单测注入假 bootstrap，避免真实补丁污染测试进程；真实 bootstrap
+// 只在最后一个真实构造用例出现（该文件内其余用例全走假替身，不触网）。
+const PROXY_KEYS = ['http_proxy', 'https_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'];
+
+function scrubProxyEnv(t, injected = {}) {
+  const saved = new Map(PROXY_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of PROXY_KEYS) delete process.env[key];
+  for (const [key, value] of Object.entries(injected)) process.env[key] = value;
+  t.after(() => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+test('ensureProxyBootstrap: no proxy configured does nothing', (t) => {
+  scrubProxyEnv(t);
+  let calls = 0;
+  const bootstrap = () => { calls += 1; };
+  assert.equal(ensureProxyBootstrap({}, { bootstrap }), false);
+  assert.equal(ensureProxyBootstrap({ no_proxy: 'localhost' }, { bootstrap }), false);
+  assert.equal(calls, 0);
+});
+
+test('ensureProxyBootstrap: lowercase-only env normalized to uppercase for bootstrap, then restored', (t) => {
+  scrubProxyEnv(t);
+  delete globalThis.GLOBAL_AGENT;
+  t.after(() => { delete globalThis.GLOBAL_AGENT; });
+  const env = {
+    http_proxy: 'http://proxy.fixture.invalid:3127',
+    https_proxy: 'http://proxy.fixture.invalid:3127',
+    no_proxy: 'localhost,.fixture.invalid',
+  };
+  let seen;
+  const bootstrap = (configuration) => {
+    seen = {
+      configuration,
+      HTTP_PROXY: process.env.HTTP_PROXY,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      NO_PROXY: process.env.NO_PROXY,
+    };
+    globalThis.GLOBAL_AGENT = {};
+    return true;
+  };
+  assert.equal(ensureProxyBootstrap(env, { bootstrap }), true);
+  assert.deepEqual(seen.configuration, { environmentVariableNamespace: '' });
+  assert.equal(seen.HTTP_PROXY, env.http_proxy);
+  assert.equal(seen.HTTPS_PROXY, env.https_proxy);
+  assert.equal(seen.NO_PROXY, env.no_proxy);
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY']) assert.equal(process.env[key], undefined);
+});
+
+test('ensureProxyBootstrap: uppercase values win over lowercase', (t) => {
+  scrubProxyEnv(t);
+  delete globalThis.GLOBAL_AGENT;
+  t.after(() => { delete globalThis.GLOBAL_AGENT; });
+  const env = {
+    HTTP_PROXY: 'http://upper.fixture.invalid:3127',
+    http_proxy: 'http://lower.fixture.invalid:3127',
+    HTTPS_PROXY: 'http://upper.fixture.invalid:3127',
+    https_proxy: 'http://lower.fixture.invalid:3127',
+  };
+  let seen;
+  const bootstrap = () => { seen = { ...process.env }; globalThis.GLOBAL_AGENT = {}; };
+  assert.equal(ensureProxyBootstrap(env, { bootstrap }), true);
+  assert.equal(seen.HTTP_PROXY, env.HTTP_PROXY);
+  assert.equal(seen.HTTPS_PROXY, env.HTTPS_PROXY);
+});
+
+test('ensureProxyBootstrap: already bootstrapped is a no-op', (t) => {
+  scrubProxyEnv(t);
+  globalThis.GLOBAL_AGENT = {};
+  t.after(() => { delete globalThis.GLOBAL_AGENT; });
+  let calls = 0;
+  const bootstrap = () => { calls += 1; };
+  assert.equal(ensureProxyBootstrap({ https_proxy: 'http://proxy.fixture.invalid:3127' }, { bootstrap }), false);
+  assert.equal(calls, 0);
+});
+
+test('createSysomClient: injected fake client never bootstraps global proxy', (t) => {
+  scrubProxyEnv(t, { https_proxy: 'http://proxy.fixture.invalid:3127' });
+  delete globalThis.GLOBAL_AGENT;
+  t.after(() => { delete globalThis.GLOBAL_AGENT; });
+  const fake = fakeClient({ host: [{ status: 'queued' }] });
+  createSysomClient(loadSysomConfig(CREDS), { client: fake });
+  assert.equal(globalThis.GLOBAL_AGENT, undefined);
+});
+
+test('createSysomClient: real SDK construction bootstraps global proxy from env', (t) => {
+  scrubProxyEnv(t, {
+    http_proxy: 'http://proxy.fixture.invalid:3127',
+    https_proxy: 'http://proxy.fixture.invalid:3127',
+    no_proxy: 'localhost',
+  });
+  delete globalThis.GLOBAL_AGENT;
+  t.after(() => { delete globalThis.GLOBAL_AGENT; });
+  const client = createSysomClient(loadSysomConfig(CREDS));
+  assert.equal(typeof client.getHostInspection, 'function');
+  assert.ok(globalThis.GLOBAL_AGENT);
+  assert.equal(globalThis.GLOBAL_AGENT.HTTPS_PROXY, 'http://proxy.fixture.invalid:3127');
+  assert.equal(globalThis.GLOBAL_AGENT.NO_PROXY, 'localhost');
 });

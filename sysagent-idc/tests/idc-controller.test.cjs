@@ -1717,7 +1717,7 @@ test('a terminal task without a reportId stops after polling and a new collectio
   });
 });
 
-test('the sysAK child env forwards only the upload whitelist, and only in pre mode', linux, async (t) => {
+test('the sysAK child env forwards only the upload whitelist and proxy, and only in pre mode', linux, async (t) => {
   const base = { LANG: 'C.UTF-8', PYTHONDONTWRITEBYTECODE: '1' };
   const injected = {
     SYSOM_POP_ENDPOINT: 'https://sysom-pre.fixture.invalid', SYSOM_ACCESS_KEY_ID: 'fixture-access-key-id',
@@ -1725,8 +1725,16 @@ test('the sysAK child env forwards only the upload whitelist, and only in pre mo
     SYSOM_DEVICE_ID: 'fixture-device', SYSOM_IDC_UPLOAD: '1', SYSOM_SECURITY_TOKEN: '',
     SYSOM_UNRELATED_SECRET: 'must-never-reach-sysak',
   };
-  const saved = new Map(Object.keys(injected).map((key) => [key, process.env[key]]));
-  for (const [key, value] of Object.entries(injected)) process.env[key] = value;
+  // 代理透传是契约的一部分：洗掉环境代理后注入fixture值，断言不受运行环境影响
+  const proxyKeys = ['http_proxy', 'https_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'];
+  const proxyFixture = {
+    http_proxy: 'http://proxy.fixture.invalid:3127',
+    https_proxy: 'http://proxy.fixture.invalid:3127',
+    no_proxy: 'localhost,.fixture.invalid',
+  };
+  const saved = new Map([...Object.keys(injected), ...proxyKeys].map((key) => [key, process.env[key]]));
+  for (const key of proxyKeys) delete process.env[key];
+  for (const [key, value] of Object.entries({ ...injected, ...proxyFixture })) process.env[key] = value;
   t.after(() => {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
@@ -1738,11 +1746,13 @@ test('the sysAK child env forwards only the upload whitelist, and only in pre mo
   const preEnv = pre.processes.calls[0].options.env;
   assert.deepEqual(Object.keys(preEnv).sort(),
     ['LANG', 'PATH', 'PYTHONDONTWRITEBYTECODE', 'SYSOM_ACCESS_KEY_ID', 'SYSOM_ACCESS_KEY_SECRET',
-      'SYSOM_DEVICE_ID', 'SYSOM_IDC_UPLOAD', 'SYSOM_POP_ENDPOINT', 'SYSOM_REGION_ID'].sort());
+      'SYSOM_DEVICE_ID', 'SYSOM_IDC_UPLOAD', 'SYSOM_POP_ENDPOINT', 'SYSOM_REGION_ID',
+      'http_proxy', 'https_proxy', 'no_proxy'].sort());
   for (const [key, value] of Object.entries(injected)) {
     if (key === 'SYSOM_UNRELATED_SECRET' || value === '') assert.equal(preEnv[key], undefined);
     else assert.equal(preEnv[key], value);
   }
+  for (const [key, value] of Object.entries(proxyFixture)) assert.equal(preEnv[key], value);
   assert.equal(preEnv.PATH, process.env.PATH);
   assert.equal(pre.processes.calls[0].options.shell, false);
   const mock = await controllerFixture(t);
